@@ -1,0 +1,29 @@
+# ZTA-FL Project Specific
+logs/
+results/
+
+# Virtual Environments
+.venv-zta/
+.venv/
+venv/
+env/
+
+# Python Bytecode & Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Trashes
+Thumbs.db
+
+# IDEs & Editors (Optional but recommended)
+.vscode/
+.idea/
+*.swp
+*.swo
