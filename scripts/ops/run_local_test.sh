@@ -38,12 +38,12 @@ if [ -f "pyproject.toml" ]; then
 fi
 
 echo "🎲 Generating random topology and configuration..."
-python3 scripts/generate_random_toml.py
+python3 tools/generate_random_toml.py
 if [ $? -ne 0 ]; then echo "❌ Failed to generate TOML"; exit 1; fi
 
 # 2. Boot the Network
 echo "🚀 Booting 3-Tier Architecture..."
-echo "y" | ./scripts/boot_network.sh &
+echo "y" | ./scripts/ops/boot_network.sh &
 
 BOOT_PID=$!
 
@@ -64,7 +64,7 @@ echo "Monitoring pipeline execution. Press Ctrl+C when finished."
 while true; do
     # Run the monitor and capture output
     # We pipe to 'tee' to display in terminal while filtering for the success string
-    SUCCESS_FOUND=$(python3 scripts/verify_pipeline.py | tee /dev/tty | grep "Round $TARGET_ROUNDS verified successfully")
+    SUCCESS_FOUND=$(python3 verification/verify_pipeline.py | tee /dev/tty | grep "Round $TARGET_ROUNDS verified successfully")
     
     if [[ -n "$SUCCESS_FOUND" ]]; then
         echo -e "\n✅ Target round $TARGET_ROUNDS reached. Initiating final audit..."
@@ -82,7 +82,7 @@ echo " 🏁 MONITORING STOPPED: Executing Final Audit"
 echo "================================================="
 
 echo "🔍 Running one-time Configuration Audit..."
-python3 scripts/verify_configs.py
+python3 verification/verify_configs.py
 
 if [ $? -eq 0 ]; then
     echo "✅ Final audit completed successfully."

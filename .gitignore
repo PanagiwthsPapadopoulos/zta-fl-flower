@@ -8,6 +8,16 @@ results/
 venv/
 env/
 
+# Zero-Trust PKI, Certificates & Routing
+src/network/certs/
+src/network/nginx.conf
+*.key
+*.crt
+*.csr
+*.pem
+*.srl
+*.ext
+
 # Python Bytecode & Cache
 __pycache__/
 *.pyc

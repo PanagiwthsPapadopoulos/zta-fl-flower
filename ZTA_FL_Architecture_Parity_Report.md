@@ -82,7 +82,91 @@ Evaluates Label Flipping ($p_{flip} \in [0.1, 0.5]$), Gradient Manipulation ($\a
 
 ---
 
-## 6. Extended Defenses & Engineering Trade-Offs
+## 6. Network Encryption - TLS & mTLS
+
+### Paper Specification
+* The paper mentions mutual TLS for fog-edge communication but does not specify for cloud-fog communication, so standard TLS was assumed.
+
+### Code Implementation
+* This implementation completely offloads network security from the application layer. The Flower nodes are intentionally isolated from cryptographic operations. **NGINX** handles all mutual TLS (mTLS) enforcement, certificate validation, and encrypted routing.
+
+#### 1. Cloud-to-Fog Boundary (Standard TLS)
+The Cloud operates as the global aggregator, secured behind a standard TLS boundary.
+* **Ingress:** The Cloud SuperLink listens on a public port secured by a central `Cloud Root CA`.
+* **Authentication:** Fog SuperNodes connect upwards as standard clients, verifying the Cloud's certificate before sending any payloads.
+
+#### 2. Fog-to-Edge Boundary (mTLS Reverse Proxy)
+The Fog layer acts as the absolute security perimeter for incoming Edge traffic.
+* **The Bouncer (NGINX Proxy):** All Edge connections hit the public NGINX port (`FOG_FL`). NGINX aggressively intercepts traffic, demands an `edge_client.crt`, and verifies it against the `Edge Root CA`. Invalid certificates are instantly dropped.
+* **The Backend (Fog SuperLink):** If verified, NGINX strips the TLS 1.3 encryption and funnels the raw, unencrypted gRPC data to the isolated Fog SuperLink listening on a hidden internal port (`FOG_INTERNAL_FL`).
+
+#### 3. Edge Egress (mTLS Sidecar)
+Edge agents train locally and securely egress data without knowing the network topology.
+* **Insecure Handoff:** The Edge SuperNode dumps raw gRPC traffic to a local loopback port (`EDGE_PROXY_PORT`).
+* **Encrypted Egress (NGINX Sidecar):** The local NGINX Sidecar intercepts this raw traffic, wraps it in heavy TLS 1.3 encryption, stamps it with the agent's unique cryptographic identity, and tunnels it to the Fog.
+
+#### Secure Data Lifecycle
+1. **Emit:** Edge application pushes raw data to local `127.0.0.1`.
+2. **Encrypt & Sign:** Edge Sidecar wraps the payload in mTLS and fires it over the public network.
+3. **Intercept & Verify:** Fog Proxy catches the payload, verifies the Edge CA signature, and decrypts it.
+4. **Process:** Fog Proxy routes the naked gRPC data to the internal aggregator.
+
+```mermaid
+flowchart TB
+    subgraph CLOUD["☁️  Tier 1: Cloud Infrastructure"]
+        direction TB
+        CSL["Cloud SuperLink\n──────────\n• TLS Active (CLOUD_FL)\n• Validates Cloud CA\n• Global Aggregation"]
+    end
+
+    subgraph FOG["🌫️  Tier 2: Fog Infrastructure (e.g., Fog 1)"]
+        direction LR
+        FSN["Fog SuperNode (Client)\n──────────\n• Connects to Cloud\n• Sends Aggregated Model\n• Standard TLS"]
+        
+        subgraph FOG_SEC["🛡️ Fog Security Boundary"]
+            direction TB
+            FNGINX["NGINX Reverse Proxy\n──────────\n• Public Bouncer (FOG_FL)\n• Terminates mTLS\n• Verifies Edge CA"]
+            FSL["Fog SuperLink (Server)\n──────────\n• Hidden Backend\n• Aggregates Edges\n• Runs Fog Strategy"]
+            
+            FNGINX -->|"Strips encryption\n& proxies traffic"| FSL
+        end
+        
+        %% Internal handoff (conceptual)
+        FSL -. "Hands off combined model" .-> FSN
+    end
+
+    subgraph EDGE["📱  Tier 3: Edge Infrastructure (e.g., Edge 1_1)"]
+        direction LR
+        subgraph EDGE_SEC["🛡️ Edge Security Boundary"]
+            direction TB
+            ENGINX["NGINX Sidecar\n──────────\n• Local Proxy (EDGE_PROXY_PORT)\n• Attaches Client Certs\n• Initiates mTLS Tunnel"]
+            ESN["Edge SuperNode (Client)\n──────────\n• Trains CNN-LSTM\n• Sends Model Update\n• Unaware of Network"]
+            
+            ESN -->|"Sends raw gRPC\n(Frontend Handoff)"| ENGINX
+        end
+    end
+
+    %% External Network Routing
+    CSL <-->|"Standard TLS Connection\n(Initiated by Fog)"| FSN
+    FNGINX <-->|"mTLS Encrypted Tunnel\n(Initiated by Edge Sidecar)"| ENGINX
+
+    %% Styles
+    classDef cloudStyle  fill:#2b2b2b,stroke:#a29bfe,stroke-width:2px,color:#fff,rx:8
+    classDef fogStyle    fill:#0984e3,stroke:#74b9ff,stroke-width:2px,color:#fff,rx:6
+    classDef edgeStyle   fill:#00b894,stroke:#55efc4,stroke-width:2px,color:#fff,rx:5
+    classDef nginxStyle  fill:#d63031,stroke:#ff7675,stroke-width:2px,color:#fff,rx:5
+    classDef boundaryStyle fill:none,stroke:#636e72,stroke-width:2px,stroke-dasharray:4 4,color:#fff
+
+    class CSL cloudStyle
+    class FSN,FSL fogStyle
+    class ESN edgeStyle
+    class FNGINX,ENGINX nginxStyle
+    class FOG_SEC,EDGE_SEC boundaryStyle
+
+```
+
+---
+
+## 7. Extended Defenses & Engineering Trade-Offs
 
 Based on deep code analysis, several specific architectural and engineering decisions represent robust adaptations specifically for Federated IIoT hardware, even if they deviate from academic boilerplate.
 
@@ -104,7 +188,7 @@ Based on deep code analysis, several specific architectural and engineering deci
 
 ---
 
-## 7. ⚠️ Missing Components (To Be Implemented)
+## 8. ⚠️ Missing Components (To Be Implemented)
 
 While the machine learning, federation, and aggregation mathematical logic is strictly at parity with the paper, the cryptographic and identity verification layers required for the "Zero-Trust" designation are currently missing from the codebase.
 
@@ -123,12 +207,7 @@ While the machine learning, federation, and aggregation mathematical logic is st
     * **Penalty:** Failed attestation or filtered by SHAP: $\tau_i \leftarrow \tau_i \times 0.5$.
     * **Quarantine:** Agents below 0.6 are quarantined and must pass 5 consecutive attestations to rejoin, resetting $\tau_i$ to 0.65.
 
-### C. Mutual TLS 1.3 (mTLS)
-* **Status:** Missing. 
-* **Paper Reference:** Section IV.
-* **To Implement:** The current `ipc.py` implementation uses unencrypted raw TCP sockets. This must be wrapped using Python's `ssl` module (`ssl.SSLContext`) enforcing TLS 1.3, requiring both the Fog Server and Edge Clients to present x509 certificates generated from a trusted local Certificate Authority.
-
-### D. Cumulative SHAP Drift Tracking (Slow Poisoning Mitigation)
+### C. Cumulative SHAP Drift Tracking (Slow Poisoning Mitigation)
 * **Status:** Missing.
 * **Paper Reference:** Section VIII-B & Table VII.
 * **To Implement:** A historical tracker for SHAP shifts to catch adaptive attackers executing "Slow Poisoning" (modifying gradients across 50+ rounds to stay under the single-round SHAP threshold).
