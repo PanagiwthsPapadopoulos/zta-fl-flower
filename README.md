@@ -78,6 +78,8 @@ flowchart TB
     class BYZ,ADV,SYB threatStyle
 ```
 
+> **Note on Network Security:** The diagram above details the Machine Learning and Federated Data Flow. For the exact **Zero-Trust NGINX mTLS routing architecture** used to secure this execution over public networks, please see the [Architecture Parity Report](ZTA_FL_Architecture_Parity_Report.md).
+
 ---
 
 ## Project Structure
@@ -90,23 +92,48 @@ zta-fl/
 │   └── unsw_nb15/             
 ├── logs/                      # Live execution logs for all network nodes
 ├── results/                   # JSON outputs and generated figures
-├── scripts/                   # Orchestration and Evaluation Scripts
-│   ├── boot_network.sh        # Main bash script to spin up the 3-tier Flower network
-│   ├── plot_metrics.py        # Generates figures from JSON result logs
-│   ├── verify_configs.py      # TOML validator
-│   └── ...                    # Pipeline linting and verification scripts
-├── src/                       # Core Implementation
+├── src/                       # STRICTLY Node Runtime Code (Deployed to physical machines)
 │   ├── federation/            # Flower FL logic (server.py, client.py, aggregation.py)
 │   ├── models/                # ML architectures (cnn_lstm.py, factory.py)
-│   ├── network/               # Custom IPC routing for Cloud/Fog communication
+│   ├── network/               # Custom IPC routing, NGINX configs, and active mTLS certs
 │   ├── security/              # Threat injection (adversarial.py, backdoor.py)
 │   └── utils/                 # Metrics, data loaders, compression, and logging
+├── scripts/                   # Bash Orchestration (DevOps & Infrastructure)
+│   ├── ops/                   # Day-to-day execution (boot_network.sh, run_local_test.sh)
+│   └── setup/                 # One-time provisioning (setup_nginx.sh, setup_security.sh)
+├── verification/              # Pre-Flight Checks & Static Analysis
+│   ├── check_hardcoded_params.py # Linter enforcing dynamic parameters
+│   ├── check_max_params.py    # System resource and constraint validation
+│   ├── verify_configs.py      # TOML validator
+│   └── verify_pipeline.py     # End-to-end data flow validation
+├── tools/                     # Offline Local Utilities & Analytics (Not deployed)
+│   ├── generate_random_toml.py # Topology fuzzer and generator
+│   └── plot_metrics.py        # Generates figures from JSON result logs
 └── pyproject.toml             # Master configuration file (Topology, FL, Security)
 ```
 
 ---
 
-## Installation
+## System Prerequisites
+
+This architecture heavily relies on **NGINX** and several standard Linux network utilities. Before running the python environment or orchestration scripts, you must install the following:
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install nginx openssl netcat-openbsd lsof
+```
+
+**macOS:**
+```bash
+brew install nginx openssl netcat lsof
+```
+
+Once NGINX is installed on the system, the project's setup script (scripts/setup/setup_nginx.sh) will automatically configure the required reverse proxy and sidecar routing tables during deployment.
+
+---
+
+## Python Installation
 
 This project uses `pyproject.toml` to manage dependencies. Ensure you are using Python 3.11+.
 
@@ -161,9 +188,16 @@ To run the full distributed Zero-Trust architecture, we use a dynamic orchestrat
 
 ```bash
 source .venv-zta/bin/activate
-chmod +x scripts/boot_network.sh
-./scripts/boot_network.sh
+chmod +x scripts/ops/boot_network.sh
+./scripts/ops/boot_network.sh
 ```
+
+### Automated Security Provisioning (PKI)
+When you run the boot script, it automatically acts as a local Certificate Authority (CA) and provisions the required Public Key Infrastructure (PKI) for the Zero-Trust NGINX routing. 
+
+The newly minted client certificates, private keys, and Root CAs are generated and stored locally in `src/network/certs/`. **These cryptographic identities are git-ignored and never leave your machine.**
+
+> **Note:** If you change your network topology in `pyproject.toml` (e.g., adding more Fog nodes or Edge clients), the boot script will detect the existing keys and prompt you to wipe them and regenerate a new cryptographic identity to match the new topology.
 
 > 🛑 **CRITICAL WARNING: GLOBAL CONFIGURATION OVERWRITE**
 > 
@@ -179,12 +213,12 @@ chmod +x scripts/boot_network.sh
 
 ## Deploying a Random Network
 
-To run a distributed Zero-Trust architecture with random hyperparameters, we use a script that produces a random `pyproject.toml` file and verifies the pipeline and hyperparameter values. The old `pyproject.toml` file gets backed up and is popped when the test ends.
+To run a distributed Zero-Trust architecture with random hyperparameters, we use a script that produces a random `pyproject.toml` file and verifies the pipeline and hyperparameter values. The old `pyproject.toml` file gets backed up and is restored when the test ends.
 
 ```bash
 source .venv-zta/bin/activate
-chmod +x scripts/run_local_test.sh
-./scripts/run_local_test.sh
+chmod +x scripts/ops/run_local_test.sh
+./scripts/ops/run_local_test.sh
 ```
 
 > **Note:** If the process gets stuck, please cancel and restart the job.
@@ -205,7 +239,7 @@ tail -f logs/system/edge1_1_supernode.log
 Otherwise, you can watch the pipeline update live using the following command:
 
 ```python
-python3 scripts/verify_pipeline.py -w
+python3 verification/verify_pipeline.py -w
 ```
 > **Note:** The `logs/` directory is **wiped clean at the start of every run.** Ensure you export any critical training metrics before restarting the network.
 
@@ -230,15 +264,15 @@ You can generate visualizations (like Accuracy vs. Communication Rounds, or SHAP
 
 * **Auto-detect latest run:** 
 ```
-python plot_metrics.py
+python3 tools/plot_metrics.py
 ```
 * **Plot specific run:** 
 ```
-python plot_metrics.py results/experiment_name
+python3 tools/plot_metrics.py results/experiment_name
 ```
 * **Custom panels:** 
 ```
-python plot_metrics.py --panels loss asr pgd
+python3 tools/plot_metrics.py --panels loss asr pgd
 ```
 
 **Available Panels:** `accuracy_f1`, `loss`, `asr`, `pgd`, `fgsm`.

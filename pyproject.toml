@@ -46,8 +46,8 @@ fog_id = "fog_0"                          # String identifier for fog instances 
 num_rounds = 3                            # Total number of global federated communication rounds
 min-clients = 1                           # Minimum active connections required to begin a round
 num_fogs = 2                              # Total number of intermediary Fog nodes operating in the network
-uniform_edges_per_fog = 2                 # If >0, forces each Fog to control exactly this many Edge devices
-custom_fog_topology = "[]"                # Array string overriding uniform edges (e.g., "[3, 1]" means Fog0 gets 3, Fog1 gets 1)
+uniform_edges_per_fog = 1                 # If >0, forces each Fog to control exactly this many Edge devices
+custom_fog_topology = "[2,1]"                # Array string overriding uniform edges (e.g., "[3, 1]" means Fog0 gets 3, Fog1 gets 1, "[]" uses uniform_edges_per_fog)
 simulate_global_leakage = true            # true = The Paper's Method. false = Strict Real-World Security
 apply_smote = true                        # Set to true to generate synthetic minority data during training
 shap_aware_base_attack = "label_flip"     # Base attack for shap-aware adversaries
@@ -57,7 +57,7 @@ shap_aware_base_attack = "label_flip"     # Base attack for shap-aware adversari
 # ==============================================================================
 dataset = "edge_iiotset"                   # Target dataset identifier mapped in data_loader.py
 dataset_path = "data/edge_iiotset/raw/network_traffic_samples.csv" # Relative path to the raw dataset file
-dataset_fraction = 0.2                   # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
+dataset_fraction = 0.01                   # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
 model_architecture = "cnnlstm"            # Target neural network class mapped in cnn_lstm.py
 learning_rate = 0.001                     # Optimizer step size during local training
 batch_size = 32                           # Number of samples processed before updating local weights
