@@ -67,10 +67,10 @@ flowchart TB
     SYB -. "Fake token" .-> FN2
 
     %% Styles
-    classDef cloudStyle  fill:#1a6496,stroke:#0d3d5c,color:#fff,rx:8
-    classDef fogStyle    fill:#2e7d32,stroke:#1b5e20,color:#fff,rx:6
-    classDef edgeStyle   fill:#4a4a8a,stroke:#2c2c6a,color:#fff,rx:5
-    classDef threatStyle fill:#b71c1c,stroke:#7f0000,color:#fff,rx:5,stroke-dasharray:4 4
+    classDef cloudStyle  fill:#1a6496,stroke:#0d3d5c,color:#fff
+    classDef fogStyle    fill:#2e7d32,stroke:#1b5e20,color:#fff
+    classDef edgeStyle   fill:#4a4a8a,stroke:#2c2c6a,color:#fff
+    classDef threatStyle fill:#b71c1c,stroke:#7f0000,color:#fff,stroke-dasharray:4 4
 
     class GA cloudStyle
     class FN1,FN2 fogStyle
@@ -116,36 +116,18 @@ zta-fl/
 
 ## System Prerequisites
 
-This architecture heavily relies on **NGINX** and several standard Linux network utilities. Before running the python environment or orchestration scripts, you must install the following:
+This architecture heavily relies on **DOCKER**, **OPENSSL** and several standard Linux network utilities. Before running the python environment or orchestration scripts, you must install the following:
 
 **Ubuntu/Debian:**
 ```bash
 sudo apt update
-sudo apt install nginx openssl netcat-openbsd lsof
+sudo apt install openssl netcat-openbsd lsof
 ```
 
 **macOS:**
 ```bash
-brew install nginx openssl netcat lsof
+brew install  openssl netcat lsof
 ```
-
-Once NGINX is installed on the system, the project's setup script (scripts/setup/setup_nginx.sh) will automatically configure the required reverse proxy and sidecar routing tables during deployment.
-
----
-
-## Python Installation
-
-This project uses `pyproject.toml` to manage dependencies. Ensure you are using Python 3.11+.
-
-```bash
-git clone https://github.com/PanagiwthsPapadopoulos/zta-fl-flower.git
-cd zta-fl-flower
-python3 -m venv .venv-zta
-source .venv-zta/bin/activate
-pip install -e .
-```
-
-*For GPU support (recommended for larger datasets), ensure you have the appropriate CUDA version installed alongside PyTorch.*
 
 ---
 
@@ -184,12 +166,20 @@ Configure which dataset to use by updating the `dataset` and `dataset_path` vari
 
 ## Deploying the Distributed Network
 
-To run the full distributed Zero-Trust architecture, we use a dynamic orchestration script that spins up the Cloud SuperLink, Fog SuperNodes/SuperLinks, and Edge SuperNodes using Flower on a single machine.
+To run the full distributed Zero-Trust architecture, we use a dynamic orchestration script that spins up the Cloud SuperLink, Fog SuperNodes/SuperLinks, and Edge SuperNodes using Docker on a single machine.
 
+> **Note:** Make sure the **DOCKER** daemon is running.
+
+The following script builds the infrastructure that the code runs on top of. Use the `--insecure` flag to bypass mTLS and TLS.
 ```bash
-source .venv-zta/bin/activate
-chmod +x scripts/ops/boot_network.sh
-./scripts/ops/boot_network.sh
+git clone https://github.com/PanagiwthsPapadopoulos/zta-fl-flower.git
+chmod +x scripts/ops/boot_network_docker.sh
+./scripts/ops/boot_network_docker.sh
+```
+While keeping the above command running, in a new terminal run the following, which ships the `FAB` to the network:
+```bash
+chmod +x scripts/ops/deploy_code_docker.sh
+./scripts/ops/deploy_code_docker.sh
 ```
 
 ### Automated Security Provisioning (PKI)
@@ -211,19 +201,7 @@ The newly minted client certificates, private keys, and Root CAs are generated a
 
 > **Note:** If the process gets stuck, please cancel and restart the job.
 
-## Deploying a Random Network
-
-To run a distributed Zero-Trust architecture with random hyperparameters, we use a script that produces a random `pyproject.toml` file and verifies the pipeline and hyperparameter values. The old `pyproject.toml` file gets backed up and is restored when the test ends.
-
-```bash
-source .venv-zta/bin/activate
-chmod +x scripts/ops/run_local_test.sh
-./scripts/ops/run_local_test.sh
-```
-
-> **Note:** If the process gets stuck, please cancel and restart the job.
-
-### Monitoring & Logs
+## Monitoring & Logs
 The terminal displays the architecture map and then holds the process. The flow of the pipeline for the whole network written to the `logs/` directory:
 
 ```bash
@@ -242,17 +220,6 @@ Otherwise, you can watch the pipeline update live using the following command:
 python3 verification/verify_pipeline.py -w
 ```
 > **Note:** The `logs/` directory is **wiped clean at the start of every run.** Ensure you export any critical training metrics before restarting the network.
-
-### Stopping the Network
-Since the script orchestrates multiple background processes, use `Ctrl+C` in the main terminal window. The script includes a `trap` function that will attempt to kill all child PIDs.
-
-**If ports remain blocked**, run the following "Nuke" command:
-
-```bash
-pkill -9 -f flower-superlink && pkill -9 -f flower-supernode
-```
-
-
 
 ---
 

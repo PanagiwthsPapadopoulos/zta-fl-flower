@@ -25,6 +25,10 @@ __pycache__/
 *.pyd
 .Python
 
+# Docker files
+docker-compose.yml
+superexec.Dockerfile
+
 # OS Generated Files
 .DS_Store
 .DS_Store?

@@ -65,17 +65,6 @@ def get_evaluate_fn(
     """
     
     def evaluate(server_round: int, parameters: list, config: dict) -> Tuple[float, dict]:
-        # SuperLink network timeouts before the actual data pipelines are fully spun up.
-        # Bypasses the Round 0 bottleneck instantly to prevent
-        if server_round == 0:
-            logger.info("[STARTUP] Round 0 detected. Bypassing ALL evaluation (Data Loading & Math) to prevent SuperLink timeout.")
-            return 0.0, {
-                "accuracy": 1.0, 
-                "macro_f1": 1.0, 
-                "asr": 0.0, 
-                "robustness_pgd": 1.0, 
-                "robustness_fgsm": 1.0
-            }
 
         # Employs a lazy-loading strategy, delaying massive memory allocations until the combat rounds actually start.
         if "eval_data" not in GLOBAL_DATA_CACHE:
@@ -283,7 +272,7 @@ class Strategy(FedAvg):
             self.ipc_server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.ipc_server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.ipc_server_sock.settimeout(self.socket_timeout) 
-            self.ipc_server_sock.bind(("127.0.0.1", self.ipc_port))
+            self.ipc_server_sock.bind(("0.0.0.0", self.ipc_port))
             self.ipc_server_sock.listen(1)
             self.logger.info(f"{self.log_prefix} [IPC] Listening on port {self.ipc_port}. Awaiting Cloud signal...")
 
@@ -583,7 +572,7 @@ class ZTACloudStrategy(FedAvg):
         Implements the specialized ZTA-FL Cloud Aggregation formula.
         Bypasses default client dataset sizing logic. Averages the parameters exclusively
         through the regional trust multipliers $w_f$ pushed upstream by the fog layers:
-        $\theta^{t+1} = \sum_{f=1}^M \left(\frac{w_f}{\sum w_f}\right) \theta_f^t$.
+        r"$\theta^{t+1} = \sum_{f=1}^M \left(\frac{w_f}{\sum w_f}\right) \theta_f^t$".
         """
         if not results:
             return None, {}

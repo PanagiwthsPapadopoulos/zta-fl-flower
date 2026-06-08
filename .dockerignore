@@ -1,0 +1,25 @@
+# Git history
+.git/
+.gitignore
+
+# Python virtual environments
+.venv/
+.venv-zta/
+.venv*
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local logs and temporary states
+logs/
+.pytest_cache/
+
+# Docker files 
+docker-compose.yml
+superexec.Dockerfile
+
+# Mac system files
+.DS_Store

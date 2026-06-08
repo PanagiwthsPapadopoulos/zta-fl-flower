@@ -1,6 +1,14 @@
 #!/bin/bash
 
 # =========================================================
+# !!! OBSOLETE !!!
+# This script has been superseded by `boot_network_docker.sh`.
+# Do NOT use this script for orchestration, as it lacks Docker 
+# container encapsulation and proper service isolation.
+# Refer to the Docker-based workflow for actual deployments.
+# =========================================================
+
+# =========================================================
 # LOCAL SIMULATION OVERRIDES
 # NOTE: The following two exports are required ONLY for macOS/Apple Silicon 
 # environments to prevent known gRPC and multiprocessing deadlocks. 

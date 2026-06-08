@@ -25,7 +25,8 @@ def setup_logger(node_id: str):
     Constructs an explicit pipeline routing analytical logs specifically tracking system milestones toward local stores
     while broadcasting surface alerts toward general visualization streams.
     """
-    os.makedirs("logs/nodes", exist_ok=True)
+    log_base_dir = "/workspace/logs/nodes"
+    os.makedirs(log_base_dir, exist_ok=True)
     
     safe_id = node_id.replace("[", "").replace("]", "").replace(" ", "_").lower()
     log_file = f"logs/nodes/{safe_id}.jsonl"

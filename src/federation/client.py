@@ -115,7 +115,8 @@ class Client(NumPyClient):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self.socket_timeout)
             try:
-                sock.connect((self.broker_ip, self.ipc_port))
+                target_host = os.getenv("FOG_SERVER_HOST", "127.0.0.1")
+                sock.connect((target_host, self.ipc_port))
                 break
             except (ConnectionRefusedError, TimeoutError, socket.timeout):
                 sock.close()
