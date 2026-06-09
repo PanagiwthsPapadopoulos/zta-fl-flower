@@ -8,7 +8,7 @@ results/
 venv/
 env/
 
-# Zero-Trust PKI, Certificates & Routing
+# Zero-Trust PKI, Certificates, Routing & TPM files
 src/network/certs/
 src/network/nginx.conf
 *.key
@@ -17,6 +17,7 @@ src/network/nginx.conf
 *.pem
 *.srl
 *.ext
+data/tpm_state/
 
 # Python Bytecode & Cache
 __pycache__/

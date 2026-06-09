@@ -29,11 +29,9 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 COMPOSE_FILE="$PROJECT_ROOT/docker-compose.yml"
-DOCKERFILE="$PROJECT_ROOT/superexec.Dockerfile"
 LOG_DIR="$PROJECT_ROOT/logs"
 CERTS_DIR="$PROJECT_ROOT/src/network/certs"
 NGINX_CONF="$PROJECT_ROOT/src/network/nginx.conf"
-NGINX_DOCKER_CONF="$PROJECT_ROOT/src/network/nginx_docker.conf"
 
 PIDS=()
 
@@ -102,26 +100,24 @@ if [ "$INSECURE_MODE" = false ]; then
     "$PROJECT_ROOT/scripts/setup/setup_nginx.sh" "$NUM_FOGS" "${EDGES_PER_FOG_ARRAY[*]}" "127.0.0.1" "$FOG_FL_BASE" "true"
 fi
 
+# Provision the TPM Volumes for the Edge Nodes
+chmod +x "$PROJECT_ROOT/scripts/setup/setup_tpm.sh"
+"$PROJECT_ROOT/scripts/setup/setup_tpm.sh" "$NUM_FOGS" "${EDGES_PER_FOG_ARRAY[*]}"
+
 # =========================================================
-# 2. IMAGE GENERATION (DOCKERFILE)
+# 2. IMAGE GENERATION
 # =========================================================
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null
 mkdir -p "$LOG_DIR/system" "$LOG_DIR/nodes" "$PROJECT_ROOT/data" "$PROJECT_ROOT/.pip-cache"
 
-cat <<EOF > "$DOCKERFILE"
-FROM flwr/superexec:1.30.0
-USER root
-ENV PYTHONUNBUFFERED=1
-WORKDIR /app
-COPY pyproject.toml .
-RUN /python/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-RUN sed -i 's/.*flwr\[simulation\].*//' pyproject.toml && /python/venv/bin/pip install -U .
-ENTRYPOINT ["flower-superexec"]
-EOF
+if ! docker image inspect zta-cloud-node:latest >/dev/null 2>&1; then
+    echo "⏳ Compiling Cloud Execution Image (Optimized Base)..."
+    docker build -t zta-cloud-node:latest -f docker/cloud.Dockerfile .
+fi
 
-if ! docker image inspect local-flower-node:latest >/dev/null 2>&1; then
-    echo "⏳ Compiling Master Execution Image..."
-    docker build -t local-flower-node:latest -f "$DOCKERFILE" .
+if ! docker image inspect zta-edge-node:latest >/dev/null 2>&1; then
+    echo "⏳ Compiling Edge Execution Image (TPM Enabled / Optimized Base)..."
+    docker build -t zta-edge-node:latest -f docker/edge.Dockerfile .
 fi
 
 # =========================================================
@@ -175,7 +171,7 @@ cat <<EOF >> "$COMPOSE_FILE"
       - "${CLOUD_CTRL}:${CLOUD_CTRL}"
 
   cloud-serverapp:
-    image: local-flower-node:latest
+    image: zta-cloud-node:latest
     environment: 
       - TZ=${HOST_TZ}
     command:
@@ -189,6 +185,7 @@ cat <<EOF >> "$COMPOSE_FILE"
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
+      - ./results:/app/results
 EOF
 
 if [ "$INSECURE_MODE" = false ]; then
@@ -257,7 +254,7 @@ EOF
     depends_on: [cloud-superlink]
 
   fog-${i}-clientapp:
-    image: local-flower-node:latest
+    image: zta-cloud-node:latest
     environment: [TZ=${HOST_TZ}, FOG_SERVER_HOST=fog-${i}-serverapp, IPC_PORT=${FOG_CLIENT_IO}]
     command:
       - "--insecure" # Internal Docker ClientAppIo traffic is ALWAYS plaintext
@@ -293,7 +290,7 @@ EOF
       - ./data:/app/data
 
   fog-${i}-serverapp:
-    image: local-flower-node:latest
+    image: zta-cloud-node:latest
     environment: [TZ=${HOST_TZ}, IPC_PORT=${FOG_SA}]
     command:
       - "--insecure" # Internal Docker ServerAppIo traffic is ALWAYS plaintext
@@ -322,7 +319,7 @@ EOF
             cat <<EOF >> "$COMPOSE_FILE"
 
   # ---------------------------------------------------------
-  # TIER 3: EDGE ${j} FOR FOG ${i}
+  # TIER 3: EDGE ${j} FOR FOG ${i} (TPM ENABLED)
   # ---------------------------------------------------------
   edge-${i}-${j}-supernode:
     image: flwr/supernode:1.30.0
@@ -345,7 +342,7 @@ EOF
       - ./data:/app/data
 
   edge-${i}-${j}-clientapp:
-    image: local-flower-node:latest
+    image: zta-edge-node:latest
     environment: [TZ=${HOST_TZ}]
     command:
       - "--insecure" # Internal Docker ClientAppIo traffic is ALWAYS plaintext
@@ -358,6 +355,7 @@ EOF
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
+      - ./data/tpm_state/edge_${i}_${j}:/app/tpm_state  # NVRAM MOUNT
 EOF
         done
     fi
