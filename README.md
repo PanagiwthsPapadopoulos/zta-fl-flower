@@ -173,11 +173,13 @@ To run the full distributed Zero-Trust architecture, we use a dynamic orchestrat
 The following script builds the infrastructure that the code runs on top of. Use the `--insecure` flag to bypass mTLS and TLS.
 ```bash
 git clone https://github.com/PanagiwthsPapadopoulos/zta-fl-flower.git
+cd zta-fl-flower
 chmod +x scripts/ops/boot_network_docker.sh
 ./scripts/ops/boot_network_docker.sh
 ```
 While keeping the above command running, in a new terminal run the following, which ships the `FAB` to the network:
 ```bash
+cd zta-fl-flower
 chmod +x scripts/ops/deploy_code_docker.sh
 ./scripts/ops/deploy_code_docker.sh
 ```
