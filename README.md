@@ -216,8 +216,14 @@ Run the deep-dive diagnostic suite from inside an active Edge container:
 docker exec -it zta-fl-flower-edge-1-1-clientapp-1 python3 scripts/tests/test_tpm.py
 ```
 
-### 2. [Future Test Suites]
-(Additional component diagnostics, such as network latency bounds, SHAP attribution integrity, or model poisoning simulations, will be documented here).
+### 2. Trust Database & Hardware Integration (State Machine Core)
+Following hardware validation, you can test the Fog layer's state machine integrated directly with the physical TPM. This diagnostic suite dynamically verifies the TrustDB's mathematical boundaries, evaluating reward scaling, quarantine enforcement via forged signatures, interrupted rehabilitation protocols, and terminal node exhaustion over a simulated connection.
+
+Run the integration diagnostic suite from inside an active Edge container:
+
+```bash
+docker exec -it zta-fl-flower-edge-1-1-clientapp-1 python3 scripts/tests/test_trust_db.py
+```
 
 ## Monitoring & Logs
 The terminal displays the architecture map and then holds the process. The flow of the pipeline for the whole network written to the `logs/` directory:
