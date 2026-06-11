@@ -343,7 +343,9 @@ EOF
 
   edge-${i}-${j}-clientapp:
     image: zta-edge-node:latest
-    environment: [TZ=${HOST_TZ}]
+    environment: 
+      - TZ=${HOST_TZ}
+      - TPM2TOOLS_TCTI=swtpm:port=2321
     command:
       - "--insecure" # Internal Docker ClientAppIo traffic is ALWAYS plaintext
       - "--plugin-type"

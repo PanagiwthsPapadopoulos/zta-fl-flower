@@ -100,7 +100,8 @@ zta-fl/
 │   └── utils/                 # Metrics, data loaders, compression, and logging
 ├── scripts/                   # Bash Orchestration (DevOps & Infrastructure)
 │   ├── ops/                   # Day-to-day execution (boot_network.sh, run_local_test.sh)
-│   └── setup/                 # One-time provisioning (setup_nginx.sh, setup_security.sh)
+│   ├── setup/                 # One-time provisioning (setup_nginx.sh, setup_security.sh)
+│   └── tests/                 # Standalone tests for different parts of the infrastructure
 ├── verification/              # Pre-Flight Checks & Static Analysis
 │   ├── check_hardcoded_params.py # Linter enforcing dynamic parameters
 │   ├── check_max_params.py    # System resource and constraint validation
@@ -201,7 +202,22 @@ The newly minted client certificates, private keys, and Root CAs are generated a
 
 > **Note:** Windows users must use WSL (Windows Subsystem for Linux) to run the orchestration bash scripts
 
-> **Note:** If the process gets stuck, please cancel and restart the job.
+
+## Diagnostics & Testing
+
+To ensure the integrity of the defense-in-depth mechanisms, this repository includes dedicated diagnostic suites that isolate and verify specific architectural components without requiring a full federated training loop.
+
+### 1. Hardware Attestation (TPM 2.0 Core)
+Before executing the federated learning pipeline, you can test the local silicon (or `swtpm` emulator) to guarantee cryptographic readiness. This diagnostic suite dynamically tests the engine's ability to handle persistent memory limits, session leaks, dictionary attack lockouts, and payload tampering.
+
+Run the deep-dive diagnostic suite from inside an active Edge container:
+
+```bash
+docker exec -it zta-fl-flower-edge-1-1-clientapp-1 python3 scripts/tests/test_tpm.py
+```
+
+### 2. [Future Test Suites]
+(Additional component diagnostics, such as network latency bounds, SHAP attribution integrity, or model poisoning simulations, will be documented here).
 
 ## Monitoring & Logs
 The terminal displays the architecture map and then holds the process. The flow of the pipeline for the whole network written to the `logs/` directory:

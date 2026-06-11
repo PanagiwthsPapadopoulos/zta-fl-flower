@@ -267,6 +267,20 @@ class Strategy(FedAvg):
             "performance": []
         }
 
+        # --- Zero-Trust Attestation Engine & Policy Engine Provisioning ---
+        if self.tier == "fog":
+            from src.security.tpm_core import TPMEngine
+            from src.security.trust_db import TrustDB
+            
+            insecure_flag = self.run_metadata.get("insecure", False) or os.getenv("ZTA_INSECURE_MODE", "false").lower() == "true"
+            self.tpm_engine = TPMEngine(logger=self.logger,insecure_mode=insecure_flag)
+            self.trust_db = TrustDB(logger=self.logger,tau_min=float(self.run_metadata.get("tau_min", 0.6)))
+            self.active_nonces = {}
+
+            # Boots up the local IPC listener if the process is anchoring a fog subnet
+            self.ipc_server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.ipc_server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
         # Boots up the local IPC listener if the process is anchoring a fog subnet
         if self.tier == "fog":
             self.ipc_server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -302,9 +316,16 @@ class Strategy(FedAvg):
 
         # Injects synchronization rounds and current strategies to the downstream instructions
         if self.tier == "fog":
+            import secrets
             for client_proxy, fit_ins in client_instructions:
                 fit_ins.config["server_round"] = self.current_bridged_round
                 fit_ins.config["strategy"] = self.strategy
+
+            # Dynamic Nonce Dispersion for Anti-Replay Verification
+                if self.strategy in ["zta", "ztafl"]:
+                    nonce = secrets.token_hex(16)
+                    fit_ins.config["nonce"] = nonce
+                    self.active_nonces[client_proxy.cid] = nonce
 
         return client_instructions
 
@@ -369,11 +390,42 @@ class Strategy(FedAvg):
         else:
             for client_proxy, fit_res in results:
                 node_name = fit_res.metrics.get("node_name", f"Unknown CID: {client_proxy.cid}")
-                self.logger.info(f"{self.log_prefix} Received weights from {node_name}", extra={"round": self.current_bridged_round})
-                trusted_results.append((client_proxy, fit_res))
+                round_display = self.current_bridged_round
+                
+                # --- Zero-Trust Application Layer Gatekeeping ---
+                if self.strategy in ["zta", "ztafl"]:
+                    tpm_token_json = fit_res.metrics.get("tpm_token_json", "")
+                    
+                    # Check Quarantine Status
+                    if self.trust_db.is_quarantined(node_name):
+                        self.logger.warning(f"{self.log_prefix} 🛑 REJECTED: Agent {node_name} is currently quarantined in TrustDB!", extra={"round": round_display})
+                        continue
+                    
+                    # Verify Crytographic Attestation Token Structure
+                    authenticated = False
+                    if tpm_token_json:
+                        try:
+                            token = json.loads(tpm_token_json)
+                            expected_nonce = self.active_nonces.get(client_proxy.cid, "")
+                            pubkey_path = f"/app/data/tpm_state/{node_name.lower().replace('[', '').replace(']', '').replace(' ', '_')}/ak.pub"
+                            authenticated = self.tpm_engine.verify_attestation_token(token, expected_nonce, pubkey_path)
+                        except Exception as e:
+                            self.logger.error(f"{self.log_prefix} Error extracting TPM data payload for {node_name}: {str(e)}")
+                    
+                    if not authenticated:
+                        self.logger.warning(f"{self.log_prefix} 🔒 ATTESTATION FAILED: Agent {node_name} failed software integrity check!", extra={"round": round_display})
+                        self.trust_db.penalize_agent(node_name, "Attestation Fault")
+                        continue
+                        
+                    # Reward persistent behavior following successful authorization checkpoint
+                    self.trust_db.reward_agent(node_name)
+                
+                self.logger.info(f"{self.log_prefix} Received weights from {node_name}", extra={"round": round_display})
+                if fit_res.num_examples > 0:
+                    trusted_results.append((client_proxy, fit_res))
                 
         return trusted_results
-
+                
     def _extract_models_from_results(self, trusted_results: list) -> Tuple[List[torch.nn.Module], List[int], List[float]]:
         """Decompresses the inbound payloads back into functional PyTorch architectures."""
         local_models, sizes, trust_weights = [], [], []

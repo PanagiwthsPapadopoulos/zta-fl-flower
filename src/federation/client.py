@@ -5,6 +5,7 @@ import time
 import socket
 import random
 import traceback
+import json
 from collections import OrderedDict
 
 import torch
@@ -21,12 +22,6 @@ from src.utils.logger_setup import setup_logger
 from src.network.ipc import send_msg, recv_msg
 from src.models.factory import get_model
 from src.utils.compression import compress_weights, decompress_weights
-
-# Limits thread usage to prevent OpenMP CPU deadlocks during heavy Server evaluation
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-torch.set_num_threads(1)
 
 GLOBAL_DATA_CACHE = {}
 
@@ -89,12 +84,12 @@ class Client(NumPyClient):
         """
         try:
             current_round = config.get("server_round", 0)
-            active_strategy = config.get("active_strategy", "fedavg")
+            strategy = config.get("strategy", "fedavg")
             
             if self.node_type == "fog_client":
                 return self._execute_fog_bridge(current_round)
             elif self.node_type == "edge":
-                return self._execute_edge_training(parameters, current_round, active_strategy)
+                return self._execute_edge_training(parameters, current_round, strategy, config)
                 
         except Exception as e:
             self.logger.error(f"{self.log_prefix} CRITICAL SILENT CRASH: {e}\n{traceback.format_exc()}", extra={"round": 0})
@@ -204,7 +199,7 @@ class Client(NumPyClient):
         
         return DataLoader(TensorDataset(X_combined, y_combined), batch_size=active_loader.batch_size, shuffle=True)
 
-    def _execute_edge_training(self, parameters: list, current_round: int, active_strategy: str):
+    def _execute_edge_training(self, parameters: list, current_round: int, strategy: str, config: dict):
         """
         Executes the core training loop for standard edge devices.
         Manages backpropagation, initiates static data splits if assigned a hostile role,
@@ -229,12 +224,12 @@ class Client(NumPyClient):
         self.logger.debug(f"[CONFIG USAGE] _execute_edge_training | learning_rate: {lr}, local_epochs: {epochs}")
 
         for epoch in range(epochs):
-            if active_strategy == "fedprox" and role not in ["label_flip", "backdoor", "gradient_manip"]:
-                loss = self._train_standard_or_poison("fedprox", lr, current_round, active_loader, active_strategy, global_model)
+            if strategy == "fedprox" and role not in ["label_flip", "backdoor", "gradient_manip"]:
+                loss = self._train_standard_or_poison("fedprox", lr, current_round, active_loader, strategy, global_model)
             elif role in ["backdoor", "label_flip", "gradient_manip"]:
-                loss = self._train_standard_or_poison(role, lr, current_round, active_loader, active_strategy, global_model)
+                loss = self._train_standard_or_poison(role, lr, current_round, active_loader, strategy, global_model)
             else:
-                loss = self._train_standard_or_poison(role, lr, current_round, active_loader, active_strategy, global_model)
+                loss = self._train_standard_or_poison(role, lr, current_round, active_loader, strategy, global_model)
                 
             self.logger.info(f"{self.log_prefix} Epoch {epoch + 1}/{epochs} complete. Loss: {loss:.4f}", extra={"round": current_round})
         
@@ -243,10 +238,18 @@ class Client(NumPyClient):
             "loss": loss,
             **self.dataset_metadata 
         }
+
+        # --- Application-Layer Hardware Root of Trust Attestation Checkpoint ---
+        if strategy in ["zta", "ztafl"]:
+            from src.security.tpm_core import TPMEngine
+            tpm_engine = TPMEngine(logger=self.logger)
+            nonce = config.get("nonce", f"round_{current_round}_default")
+            tpm_token = tpm_engine.generate_attestation_token(nonce)
+            metadata["tpm_token_json"] = json.dumps(tpm_token)
         
         return self.get_parameters(config={}), len(self.train_loader.dataset), metadata
 
-    def _train_standard_or_poison(self, role: str, lr: float, current_round: int, active_loader: DataLoader, active_strategy: str, global_model: torch.nn.Module):
+    def _train_standard_or_poison(self, role: str, lr: float, current_round: int, active_loader: DataLoader, strategy: str, global_model: torch.nn.Module):
         """
         Computes the gradients based strictly on assigned logic tracks. Executes honest descents
         or completely hijacks the parameters via artificial scaling, label flipping, or
@@ -259,7 +262,7 @@ class Client(NumPyClient):
 
         self.logger.debug(f"[CONFIG USAGE] _train_standard_or_poison | clip_norm: {clip_norm}")
         
-        if active_strategy == "fedprox" and role not in ["label_flip", "backdoor", "gradient_manip"]:
+        if strategy == "fedprox" and role not in ["label_flip", "backdoor", "gradient_manip"]:
             from src.federation.aggregation import fedprox_update
             fedprox_mu = float(self.train_config.get("fedprox_mu", 0.01))
             return fedprox_update(
@@ -363,7 +366,7 @@ def client_fn(context: Context):
     dataset_metadata = None
     train_config = None
 
-    active_strategy = str(run_config.get("strategy", "zta"))
+    strategy = str(run_config.get("strategy", "zta"))
     dataset_name = str(run_config.get("dataset", "edge_iiotset")).lower()
     
     if dataset_name not in DATASET_METADATA:
