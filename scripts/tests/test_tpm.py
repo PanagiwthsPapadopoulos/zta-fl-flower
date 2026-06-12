@@ -4,7 +4,7 @@ import time
 import logging
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from src.security.tpm_core import TPMEngine
+from security.attestation.tpm_core import TPMEngine
 
 # =====================================================================
 # Logger Configuration

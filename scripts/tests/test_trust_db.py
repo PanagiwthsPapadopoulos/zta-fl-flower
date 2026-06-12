@@ -4,8 +4,8 @@ import logging
 
 # Ensure the src directory is in the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from src.security.trust_db import TrustDatabase
-from src.security.tpm_core import TPMEngine
+from security.policy.trust_db import TrustDatabase
+from security.attestation.tpm_core import TPMEngine
 
 # =====================================================================
 # Logger Configuration

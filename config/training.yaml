@@ -1,0 +1,15 @@
+# Global ML Training Parameters
+dataset: "edge_iiotset"
+dataset_path: "data/edge_iiotset/raw/network_traffic_samples.csv"
+dataset_fraction: 1.0
+model_architecture: "cnnlstm"
+
+learning_rate: 0.001
+batch_size: 32
+local_epochs: 1
+quantization_bits: 32
+rollback_threshold: 0.50
+
+test_split: 0.30
+val_split: 0.50
+random_seed: 42

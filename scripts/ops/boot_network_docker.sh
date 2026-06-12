@@ -28,10 +28,14 @@ done
 # =========================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-COMPOSE_FILE="$PROJECT_ROOT/docker-compose.yml"
+COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
 LOG_DIR="$PROJECT_ROOT/logs"
 CERTS_DIR="$PROJECT_ROOT/src/network/certs"
 NGINX_CONF="$PROJECT_ROOT/src/network/nginx.conf"
+
+# Dynamically determine a safe Compose project name based on the root directory
+PROJECT_DIR_NAME=$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
+COMPOSE_PROJECT_NAME="${PROJECT_DIR_NAME:-flwr-federation}"
 
 PIDS=()
 
@@ -40,7 +44,7 @@ PIDS=()
 # =========================================================
 cleanup() {
     echo -e "\n🛑 Caught Ctrl+C! Shutting down the Docker Engine..."
-    docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null
+    docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down --remove-orphans 2>/dev/null
     echo "✅ Teardown complete. Network is offline."
     exit 0
 }
@@ -107,7 +111,7 @@ chmod +x "$PROJECT_ROOT/scripts/setup/setup_tpm.sh"
 # =========================================================
 # 2. IMAGE GENERATION
 # =========================================================
-docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null
+docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down --remove-orphans 2>/dev/null
 mkdir -p "$LOG_DIR/system" "$LOG_DIR/nodes" "$PROJECT_ROOT/data" "$PROJECT_ROOT/.pip-cache"
 
 if ! docker image inspect zta-cloud-node:latest >/dev/null 2>&1; then
@@ -125,6 +129,8 @@ fi
 # =========================================================
 
 cat <<EOF > "$COMPOSE_FILE"
+name: ${COMPOSE_PROJECT_NAME}
+
 networks:
   flwr-network:
     driver: bridge
@@ -367,8 +373,8 @@ done
 #  4. BOOTING DOCKER FEDERATION                    
 # =================================================
 cd "$PROJECT_ROOT" || exit 1
-docker compose up -d
-docker compose logs -f > "$LOG_DIR/system/docker_mesh.log" 2>&1 &
+docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" up -d
+docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" logs -f > "$LOG_DIR/system/docker_mesh.log" 2>&1 &
 PIDS+=($!)
 
 # =================================================

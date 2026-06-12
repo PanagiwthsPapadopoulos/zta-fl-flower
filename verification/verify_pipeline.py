@@ -84,6 +84,14 @@ def verify_pipeline():
     rounds_data = defaultdict(list)
     for log in logs:
         r = log.get("round")
+        
+        # Fallback: Extract round from the new hyper-verbose message strings if the JSON 'round' key is null
+        if not r:
+            msg = log.get("message", "")
+            match = re.search(r"for round (\d+)", msg)
+            if match:
+                r = int(match.group(1))
+                
         if r is not None and r > 0: 
             rounds_data[r].append(log)
             
@@ -109,12 +117,12 @@ def verify_pipeline():
             if "CLOUD" in node and "Shouting to all FOG clients" in msg:
                 actions["cloud_shout"].add(node)
                 
-            # Validates intermediate client transmission signals.
-            elif "FOG" in node and "CLIENT" in node and "Sending START signal" in msg:
+            # Validates intermediate client transmission signals (Updated for FogBridge).
+            elif "FOG" in node and "CLIENT" in node and "[IPC CLIENT] Connected! Sending START signal" in msg:
                 actions["fog_client_start"].add(node)
                 
-            # Checks operational awakening parameters across intermediate servers.
-            elif "FOG" in node and "SERVER" in node and "START received" in msg:
+            # Checks operational awakening parameters across intermediate servers (Updated for FogBridge).
+            elif "FOG" in node and "SERVER" in node and "[IPC SERVER] START received" in msg:
                 actions["fog_server_start"].add(node)
                 
             # Identifies successfully terminated individual optimization epochs.
@@ -122,11 +130,11 @@ def verify_pipeline():
                 actions["edge_train"].add(node)
                 
             # Interprets logic branches dictating intermediate aggregation logic processing.
-            elif "FOG" in node and "SERVER" in node and ("Caching state" in msg or "Rolling back" in msg or "Falling back" in msg):
+            elif "FOG" in node and "SERVER" in node and ("Caching state" in msg or "Rolling back" in msg or "Falling back" in msg or "No trusted results" in msg):
                 actions["fog_server_end"].add(node)
                 
             # Ensures terminal data transfer limits reach target environments appropriately.
-            elif "CLOUD" in node and "Received weights from [FOG" in msg:
+            elif "CLOUD" in node and "Received weights from" in msg and "[FOG" in msg:
                 match = re.search(r"(\[FOG \d+ CLIENT\])", msg)
                 if match:
                     actions["fog_client_end"].add(match.group(1))
