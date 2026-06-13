@@ -1,28 +1,53 @@
-# Zero-Trust & Adversarial Threat Profiles
-adv_ratio: 0.3
-pgd_ratio: 0.0
-fgsm_ratio: 0.0
-backdoor_ratio: 0.0
-label_flip_ratio: 0.0
-grad_manip_ratio: 0.0
-shap_aware_ratio: 0.0
+# Global Security
+simulate_global_leakage: true           # true = The Paper's Method. false = Strict Real-World Security
+shap_aware_base_attack: "label_flip"    # Base attack for shap-aware adversaries
+rollback_threshold: 0.00                # Accuracy threshold. If global accuracy drops below this, weights revert to previous round
 
-# Evasion Parameters
-pgd_eps: 0.1
-pgd_alpha: 0.01
-pgd_n_iter: 7
-fgsm_eps: 0.2
-clip_min: 0.0
-clip_max: 1.0
-clip_norm: 1.0
+# Threat Model
+# Values represent the proportion of the total edge network assigned to a specific attack.
+# The sum of all ratios MUST NOT exceed 1.0. Remaining fraction (1.0 - sum) defaults to Benign nodes.
+label_flip_ratio: 0.05                   # Proportion of edge agents that randomly swap true labels
+grad_manip_ratio: 0.5                   # Proportion of edge agents that scale up gradients to overpower aggregation
+backdoor_ratio: 0.05                     # Proportion of edge agents injecting targeted deterministic patterns
+pgd_ratio: 0.05                          # Proportion of edge agents training on iterative PGD adversarial examples
+fgsm_ratio: 0.15                         # Proportion of edge agents training on single-step FGSM adversarial examples
+shap_aware_ratio: 0.1                   # Proportion of edge agents that are exploiting the SHAP-aware architecture
 
-# Defense Parameters
-shap_threshold: 0.5
-shap_tau: 0.15
-shap_explain_count: 10
+# Attack Profiles
+# Label Flipping
+p_flip: 0.0                           # Probability that a malicious node flips a given label in its batch (1.0 = 100%)
+# Gradient Manipulation
+gradient_alpha: 0.0                   # Scalar multiplier used to artificially inflate malicious weight updates
+# Backdoor
+backdoor_poison_fraction: 0.15        # Percentage of the local dataset injected with the BadNet trigger
+backdoor_target_class: 0              # The exact integer label the backdoor attempts to force the model to predict
+backdoor_trigger_features: "[-3, -2, -1]" # Array string dictating which exact feature indices to modify with the trigger
+backdoor_trigger_value: 1.5           # The numerical magnitude injected into the selected trigger features
+# PGD
+pgd_adv_ratio: 0.0                    # Percentage of a malicious node's batch replaced with PGD examples
+pgd_eps: 0.1                          # Maximum allowed perturbation radius (L-infinity budget)
+pgd_alpha: 0.01                       # Step size taken in the direction of the gradient per iteration
+pgd_n_iter: 7                         # Number of iterative projection steps taken by the PGD algorithm
+# FGSM
+fgsm_adv_ratio: 0.2                   # Percentage of a malicious node's batch replaced with FGSM examples
+fgsm_eps: 0.2                         # Maximum allowed perturbation radius (L-infinity budget)
+fgsm_alpha: 0.02                      # Magnitude of the single gradient step
 
-# Backdoor Parameters
-backdoor_poison_fraction: 0.5
-backdoor_target_class: 0
-backdoor_trigger_features: [-3, -2, -1]
-backdoor_trigger_value: 1.5
+# Defenses
+# ZTA-FL
+shap_threshold: 0.5                   # Minimum SHAP stability score (s_i) required to pass the Byzantine filter
+shap_val_samples: 100                 # Exact number of samples the Fog uses to evaluate incoming local updates
+shap_explain_count: 10                # Number of background samples used for Integrated Gradients baseline approximation
+# Baselines
+krum_f: 1                             # (Krum) Expected integer count of Byzantine attackers to bypass during Euclidean selection
+trimmed_mean_beta: 0.1                # (Trimmed Mean) Fraction of extreme weights to discard from top and bottom (0.1 = trim 10%)
+flame_target_frac: 0.5                # (FLAME) Minimum proportion of updates guaranteed to be kept regardless of clustering
+
+# Robustness
+# Honest Mode
+benign_adv_ratio: 0.3                 # Percentage of an honest node's training batch replaced with adversarial examples for robustness
+benign_eps: 0.05                      # Epsilon budget strictly for the honest robustness training
+benign_alpha: 0.2                     # Step size strictly for the honest robustness training
+benign_n_iter: 3                      # Iterations strictly for the honest robustness training
+# Server Evaluation
+robustness_eval_attack: "pgd"         # String denoting which attack ("pgd" or "fgsm") the Cloud Server uses to benchmark Global Robustness

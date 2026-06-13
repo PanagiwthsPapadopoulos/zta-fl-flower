@@ -1,15 +1,28 @@
-# Global ML Training Parameters
-dataset: "edge_iiotset"
-dataset_path: "data/edge_iiotset/raw/network_traffic_samples.csv"
-dataset_fraction: 1.0
-model_architecture: "cnnlstm"
+# Experiment
+run_name: ""                            # String identifier for output JSON logs (blank = auto timestamp)
+strategy: "zta"                         # Aggregation algorithm (zta, ztafl, fedavg, fedprox, krum, trimmed_mean, flame, fltrust)
+num_rounds: 3                           # Total number of global federated communication rounds
+min-clients: 1                          # Minimum active connections required to begin a round
 
-learning_rate: 0.001
-batch_size: 32
-local_epochs: 1
-quantization_bits: 32
-rollback_threshold: 0.50
+# Dataset
+dataset: "edge_iiotset"                 # Target dataset identifier mapped in data_loader.py
+dataset_path: "data/edge_iiotset/raw/network_traffic_samples.csv" # Relative path to the raw dataset file
+dataset_fraction: 0.01                  # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
+apply_smote: true                       # Set to true to generate synthetic minority data during training
 
-test_split: 0.30
-val_split: 0.50
-random_seed: 42
+# Model
+model_architecture: "cnnlstm"           # Target neural network class mapped in cnn_lstm.py
+learning_rate: 0.001                    # Optimizer step size during local training
+batch_size: 32                          # Number of samples processed before updating local weights
+local_epochs: 3                         # Number of full local dataset passes per federated round
+random_seed: 42                         # Master seed for dataset shuffling, partition logic, and role assignment
+fedprox_mu: 0.01                        # (FedProx) Proximal penalty term restricting how far local models can drift from global
+
+# Skew
+n_classes_per: 3                        # Label Skew: Number of distinct traffic classes each edge agent is allowed to see
+power_law_a: 0.4                        # Quantity Skew: Shape of dataset size distribution (0.4 = long tail/heavy skew, 1.0 = uniform)
+
+# Normalization
+clip_min: 0.0                           # Lower mathematical bound of scaled features (used to constrain adversarial attacks)
+clip_max: 1.0                           # Upper mathematical bound of scaled features (used to constrain adversarial attacks)
+clip_norm: 1.0                          # Maximum L2 norm allowed for gradients before clipping (prevents exploding gradients)

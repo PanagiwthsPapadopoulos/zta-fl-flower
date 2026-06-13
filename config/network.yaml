@@ -1,4 +1,22 @@
-# Network and IPC Configuration
-broker_ip: "127.0.0.1"
-fog_ipc_base: 10000
-socket_timeout: 600.0
+# Infrastructure
+broker_ip: "127.0.0.1"                  # Global IP address of the broker routing traffic across the network
+socket_timeout: 3600.0                  # Maximum time (seconds) to wait for network IPC responses before throwing a TimeoutError
+
+# Cloud Ports (9000 - 9099)
+cloud_sa_port: 9001                     # Flower SuperLink API Port
+cloud_fl_port: 9002                     # Flower Fleet API Port
+cloud_ctrl_port: 9003                   # Flower ServerApp Execution Port
+
+
+# Fog Port Bases (Supports up to 99 Fogs safely. e.g., Fog 1 uses 9101, Fog 2 uses 9102)
+fog_sa_base: 9100                       # Base port for Fog SuperLink APIs
+fog_fl_base: 9200                       # Base port for Fog Fleet APIs
+fog_ctrl_base: 9300                     # Base port for Fog ServerApp Execution
+fog_client_io_base: 9400                # Base port for Fog Client Node connections
+fog_ipc_base: 9500                      # Base port for the custom ZTA-FL Socket Bridge between Fog and Cloud
+
+# Edge Port Base (10000+) 
+edge_client_io_base: 10000              # Base port for Edge Client Node connections (Supports 99 edges per fog)
+
+# Communication
+quantization_bits: 32                   # Bit-width for dynamic payload compression (8=INT8, 16=FP16, 32=FP32/Disabled)
