@@ -2,10 +2,19 @@ FROM flwr/superexec:1.30.0
 
 USER root
 ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y \
+    tpm2-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy dependency file first
 COPY pyproject.toml .
+
+COPY ./src /app/src
+
+COPY ./scripts /app/scripts
 
 # 1. Force lightweight CPU PyTorch to block CUDA downloads
 RUN /python/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu

@@ -1,0 +1,4 @@
+# Network and IPC Configuration
+broker_ip: "127.0.0.1"
+fog_ipc_base: 10000
+socket_timeout: 600.0

@@ -1,0 +1,28 @@
+# Zero-Trust & Adversarial Threat Profiles
+adv_ratio: 0.3
+pgd_ratio: 0.0
+fgsm_ratio: 0.0
+backdoor_ratio: 0.0
+label_flip_ratio: 0.0
+grad_manip_ratio: 0.0
+shap_aware_ratio: 0.0
+
+# Evasion Parameters
+pgd_eps: 0.1
+pgd_alpha: 0.01
+pgd_n_iter: 7
+fgsm_eps: 0.2
+clip_min: 0.0
+clip_max: 1.0
+clip_norm: 1.0
+
+# Defense Parameters
+shap_threshold: 0.5
+shap_tau: 0.15
+shap_explain_count: 10
+
+# Backdoor Parameters
+backdoor_poison_fraction: 0.5
+backdoor_target_class: 0
+backdoor_trigger_features: [-3, -2, -1]
+backdoor_trigger_value: 1.5

@@ -5,6 +5,7 @@ import time
 import socket
 import random
 import traceback
+import json
 from collections import OrderedDict
 
 import torch
@@ -14,19 +15,13 @@ from torch.utils.data import DataLoader, TensorDataset
 from flwr.common import Context
 from flwr.client import NumPyClient, ClientApp
 
-from src.security.adversarial import local_train_byzantine, local_train_honest
-from src.security.backdoor import poison_partition
+from src.security.attacks.adversarial import local_train_byzantine, local_train_honest
+from src.security.attacks.backdoor import poison_partition
 from src.utils.data_loader import get_dataset, DATASET_METADATA, non_iid_partition
 from src.utils.logger_setup import setup_logger
 from src.network.ipc import send_msg, recv_msg
 from src.models.factory import get_model
 from src.utils.compression import compress_weights, decompress_weights
-
-# Limits thread usage to prevent OpenMP CPU deadlocks during heavy Server evaluation
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-torch.set_num_threads(1)
 
 GLOBAL_DATA_CACHE = {}
 
@@ -56,30 +51,23 @@ class Client(NumPyClient):
         if self.node_type == "fog_client":
             fog_ipc_base = int(self.train_config.get("fog_ipc_base", 10000))
             self.ipc_port = fog_ipc_base + self.fog_num
+        elif self.node_type == "edge":
+            from src.federation.edge_trainer import EdgeTrainer
+            self.trainer = EdgeTrainer(
+                logger=self.logger, log_prefix=self.log_prefix, model=self.model,
+                train_loader=self.train_loader, device=self.device,
+                train_config=self.train_config, dataset_metadata=self.dataset_metadata
+            )
 
     def get_parameters(self, config: dict) -> list:
-        """
-        Extracts the internal architectural weights and squeezes them through a
-        quantization protocol to dramatically reduce network payload overhead.
-        """
-        if self.model is None:
-            raise RuntimeError(f"{self.log_prefix} Model is uninitialized.")
-        
+        """Provides initial weights if Flower randomly selects this node at Round 0."""
+        if self.node_type == "edge":
+            return self.trainer.get_parameters()
+            
+        # Fog clients must also return valid initialized weights to satisfy Flower's boot checks
         weights = [val.cpu().numpy() for _, val in self.model.state_dict().items()]
         bits = int(self.train_config.get("quantization_bits", 32))
         return compress_weights(weights, bits)
-
-    def set_parameters(self, parameters: list):
-        """
-        Catches the outbound payload, decompresses the tensors, and securely
-        snaps the parameters straight back into the local PyTorch architecture.
-        """
-        if self.model is not None and parameters:
-            bits = int(self.train_config.get("quantization_bits", 32))
-            decompressed_params = decompress_weights(parameters, bits)
-            params_dict = zip(self.model.state_dict().keys(), decompressed_params)
-            state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
-            self.model.load_state_dict(state_dict, strict=True)
 
     def fit(self, parameters: list, config: dict):
         """
@@ -89,13 +77,14 @@ class Client(NumPyClient):
         """
         try:
             current_round = config.get("server_round", 0)
-            active_strategy = config.get("active_strategy", "fedavg")
+            strategy = config.get("strategy", "fedavg")
             
             if self.node_type == "fog_client":
-                return self._execute_fog_bridge(current_round)
+                from src.network.fog_bridge import FogBridgeClient
+                bridge = FogBridgeClient(self.logger, self.log_prefix, self.ipc_port, self.socket_timeout)
+                return bridge.execute_round(current_round)
             elif self.node_type == "edge":
-                return self._execute_edge_training(parameters, current_round, active_strategy)
-                
+                return self.trainer.execute_training(parameters, current_round, strategy, config)                
         except Exception as e:
             self.logger.error(f"{self.log_prefix} CRITICAL SILENT CRASH: {e}\n{traceback.format_exc()}", extra={"round": 0})
             return [], 0, {"status": "crashed"}
@@ -103,200 +92,6 @@ class Client(NumPyClient):
     def evaluate(self, parameters: list, config: dict):
         """Forces localized evaluation returns into a neutral state to preserve computation bounds."""
         return 0.0, 1, {"accuracy": 1.0}
-
-    def _execute_fog_bridge(self, current_round: int):
-        """
-        Punches through the network layers connecting the split fog tier architecture.
-        Listens for the signal to sync the models and hauls the data across the subnets.
-        """
-        self.logger.info(f"{self.log_prefix} [IPC BRIDGE] Connecting to Fog Server on port {self.ipc_port}...", extra={"round": current_round})
-        
-        while True:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(self.socket_timeout)
-            try:
-                target_host = os.getenv("FOG_SERVER_HOST", "127.0.0.1")
-                sock.connect((target_host, self.ipc_port))
-                break
-            except (ConnectionRefusedError, TimeoutError, socket.timeout):
-                sock.close()
-                time.sleep(0.5)
-
-        self.logger.info(f"{self.log_prefix} [IPC BRIDGE] Connected! Sending START signal.", extra={"round": current_round})
-        send_msg(sock, {"cmd": "START", "round": current_round})
-        
-        try:
-            aggregated_ndarrays = recv_msg(sock)
-        except socket.timeout:
-            self.logger.error(f"{self.log_prefix} [IPC BRIDGE] Timeout waiting for weights!", extra={"round": current_round})
-            raise
-        finally:
-            sock.close()
-        
-        if not aggregated_ndarrays:
-            return [], 0, {"status": "neutralized_attack"}
-        
-        return aggregated_ndarrays, 1, {"node_name": self.log_prefix}
-
-    def _apply_static_adversarial_split(self, active_loader: DataLoader, role: str) -> DataLoader:
-        """
-        Strictly implements the paper's 70/30 static clean/adversarial split.
-        Subsets the arrays and forces the poison chunk directly
-        through continuous optimization bypass attacks.
-        """
-        adv_ratio = float(self.train_config.get("adv_ratio", 0.3))
-        if adv_ratio <= 0.0:
-            return active_loader
-
-        self.logger.info(f"{self.log_prefix} Applying static {adv_ratio*100}% adversarial split for {role.upper()}...")
-        
-        # Unpack the dataset
-        X_all, y_all = [], []
-        for X, y in active_loader:
-            X_all.append(X)
-            y_all.append(y)
-        X_all = torch.cat(X_all).to(self.device)
-        y_all = torch.cat(y_all).to(self.device)
-
-        # Perform the 70/30 split
-        split_idx = int(len(X_all) * (1 - adv_ratio))
-        X_clean, y_clean = X_all[:split_idx], y_all[:split_idx]
-        X_to_poison, y_to_poison = X_all[split_idx:], y_all[split_idx:]
-
-        self.model.eval()
-        eps = float(self.train_config.get("eps", 0.1))
-        alpha = float(self.train_config.get("alpha", 0.01))
-        clip_min = float(self.train_config.get("clip_min", 0.0))
-        clip_max = float(self.train_config.get("clip_max", 1.0))
-        
-        X_adv_list = []
-        batch_size = active_loader.batch_size
-
-        for start in range(0, X_to_poison.size(0), batch_size):
-            end = start + batch_size
-            X_chunk = X_to_poison[start:end]
-            y_chunk = y_to_poison[start:end]
-            
-            if X_chunk.size(0) < 2:
-                X_adv_list.append(X_chunk.cpu())
-                continue
-                
-            if role == "pgd":
-                from src.security.adversarial import pgd_attack
-                chunk_adv = pgd_attack(
-                    model=self.model, x=X_chunk, y=y_chunk, 
-                    eps=eps, alpha=alpha,
-                    clip_min=clip_min, clip_max=clip_max
-                )
-            else: 
-                from src.security.adversarial import fgsm_attack
-                chunk_adv = fgsm_attack(
-                    model=self.model, x=X_chunk, y=y_chunk, 
-                    alpha=eps, clip_min=clip_min, clip_max=clip_max
-                )
-            X_adv_list.append(chunk_adv.cpu())
-
-        X_adv = torch.cat(X_adv_list)
-
-        # Recombine into a new static DataLoader
-        X_combined = torch.cat([X_clean, X_adv.detach()]).cpu()
-        y_combined = torch.cat([y_clean, y_to_poison]).cpu()
-        
-        return DataLoader(TensorDataset(X_combined, y_combined), batch_size=active_loader.batch_size, shuffle=True)
-
-    def _execute_edge_training(self, parameters: list, current_round: int, active_strategy: str):
-        """
-        Executes the core training loop for standard edge devices.
-        Manages backpropagation, initiates static data splits if assigned a hostile role,
-        and calculates loss profiles sequentially across defined optimization epochs.
-        """
-        self.set_parameters(parameters)
-        
-        global_model = copy.deepcopy(self.model)
-        global_model.eval()
-        global_model.to(self.device)
-        
-        lr = self.train_config.get("learning_rate", 0.001)
-        role = self.train_config.get("role", "benign")
-        epochs = self.train_config.get("local_epochs", 1)
-        
-        active_loader = self.train_loader
-        if role in ["pgd", "fgsm", "benign"] and float(self.train_config.get("adv_ratio", 0.0)) > 0:
-            active_loader = self._apply_static_adversarial_split(active_loader, role)
-            
-        loss = 0.0
-
-        self.logger.debug(f"[CONFIG USAGE] _execute_edge_training | learning_rate: {lr}, local_epochs: {epochs}")
-
-        for epoch in range(epochs):
-            if active_strategy == "fedprox" and role not in ["label_flip", "backdoor", "gradient_manip"]:
-                loss = self._train_standard_or_poison("fedprox", lr, current_round, active_loader, active_strategy, global_model)
-            elif role in ["backdoor", "label_flip", "gradient_manip"]:
-                loss = self._train_standard_or_poison(role, lr, current_round, active_loader, active_strategy, global_model)
-            else:
-                loss = self._train_standard_or_poison(role, lr, current_round, active_loader, active_strategy, global_model)
-                
-            self.logger.info(f"{self.log_prefix} Epoch {epoch + 1}/{epochs} complete. Loss: {loss:.4f}", extra={"round": current_round})
-        
-        metadata = {
-            "node_name": self.log_prefix,
-            "loss": loss,
-            **self.dataset_metadata 
-        }
-        
-        return self.get_parameters(config={}), len(self.train_loader.dataset), metadata
-
-    def _train_standard_or_poison(self, role: str, lr: float, current_round: int, active_loader: DataLoader, active_strategy: str, global_model: torch.nn.Module):
-        """
-        Computes the gradients based strictly on assigned logic tracks. Executes honest descents
-        or completely hijacks the parameters via artificial scaling, label flipping, or
-        SHAP-aware optimization maneuvers depending on the active threat profile.
-        """
-        clip_norm = float(self.train_config.get("clip_norm", 1.0))
-        clip_min = float(self.train_config.get("clip_min", 0.0))
-        clip_max = float(self.train_config.get("clip_max", 1.0))
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-
-        self.logger.debug(f"[CONFIG USAGE] _train_standard_or_poison | clip_norm: {clip_norm}")
-        
-        if active_strategy == "fedprox" and role not in ["label_flip", "backdoor", "gradient_manip"]:
-            from src.federation.aggregation import fedprox_update
-            fedprox_mu = float(self.train_config.get("fedprox_mu", 0.01))
-            return fedprox_update(
-                model=self.model, global_model=global_model, loader=active_loader,
-                optimizer=optimizer, mu=fedprox_mu, device=self.device
-            )
-            
-        elif role in ["backdoor", "label_flip", "gradient_manip", "shap_aware"]:
-            
-            if role == "shap_aware":
-                from src.security.adversarial import local_train_shap_aware
-                shap_tau = float(self.train_config.get("shap_tau", 0.15))
-                shap_aware_base_attack = self.train_config.get("shap_aware_base_attack", "label_flip")
-
-                self.logger.debug(f"[CONFIG USAGE] local_train_shap_aware | shap_tau: {shap_tau}, shap_aware_base_attack: {shap_aware_base_attack}")
-
-                return local_train_shap_aware(
-                    model=self.model, global_model=global_model, loader=active_loader, attack=shap_aware_base_attack,
-                    n_classes=self.train_config.get("num_classes", 15), 
-                    shap_threshold=shap_tau, device=self.device,
-                    lr=lr, epochs=1, clip_norm=clip_norm
-                )
-            
-            attack_type = "gradient_manipulation" if role == "gradient_manip" else role
-            alpha_scale = float(self.train_config.get("alpha", 5.0))
-            num_classes = self.train_config.get("num_classes", 15)
-            return local_train_byzantine(
-                model=self.model, loader=active_loader, attack=attack_type,
-                n_classes=num_classes, scale=alpha_scale, device=self.device, lr=lr,
-                epochs=1, clip_norm=clip_norm
-            )
-            
-        else:
-            return local_train_honest(
-                model=self.model, loader=active_loader, device=self.device, lr=lr,
-                epochs=1, clip_norm=clip_norm
-            )
 
 
 def _build_fog_client(run_config: dict, node_config: dict):
@@ -317,7 +112,6 @@ def _build_fog_client(run_config: dict, node_config: dict):
     logger = setup_logger(log_prefix)
     return logger, node_type, log_prefix, fog_num, train_config
 
-def _assign_edge_roles(run_config: dict, total_edges: int, global_index: int, master_seed: int, logger):
     """
     Computes strict assignments distributing adversarial identities across the edge grid
     based entirely on fixed mathematical ratios drawn from the primary configuration parameters.
@@ -355,7 +149,8 @@ def client_fn(context: Context):
     Generates the local execution arrays matching the provided execution parameters.
     Handles topology routing and hard-binds designated operational states.
     """
-    run_config = context.run_config
+    from src.utils.config_loader import get_merged_config
+    run_config = get_merged_config(context.run_config)
     node_config = context.node_config
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -363,7 +158,7 @@ def client_fn(context: Context):
     dataset_metadata = None
     train_config = None
 
-    active_strategy = str(run_config.get("strategy", "zta"))
+    strategy = str(run_config.get("strategy", "zta"))
     dataset_name = str(run_config.get("dataset", "edge_iiotset")).lower()
     
     if dataset_name not in DATASET_METADATA:
@@ -405,7 +200,8 @@ def client_fn(context: Context):
             edges_before_me = sum(topology[:fog_num-1]) if fog_num > 1 else 0
             global_index = edges_before_me + internal_id 
 
-            role = _assign_edge_roles(run_config, total_edges, global_index, master_seed, logger)
+            from src.security.threat_profiler import assign_edge_roles
+            role = assign_edge_roles(run_config, total_edges, global_index, master_seed, logger)
                 
             train_config = {
                 "role": role,

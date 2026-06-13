@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY pyproject.toml .
 
+COPY ./src /app/src
+
+COPY ./scripts /app/scripts
+
 # Force CPU torch to keep builds fast
 RUN /python/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 RUN sed -i 's/.*flwr\[simulation\].*//' pyproject.toml || true
