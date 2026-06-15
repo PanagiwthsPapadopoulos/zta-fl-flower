@@ -4,6 +4,11 @@ A privacy-preserving, Byzantine-resilient federated learning framework for Indus
 
 The system integrates device attestation concepts, SHAP-weighted robust aggregation, and on-device adversarial training into a three-tier edge–fog–cloud architecture.
 
+> **📖 Architecture Parity & Reproducibility Report**
+>
+> Curious how this codebase maps to the theoretical experiments in the original ZTA-FL paper? 
+> Please read the **[ZTA-FL Architecture Parity Report](ZTA_FL_Architecture_Parity_Report.md)** before exploring the code. It explicitly details which components are mathematically faithful reproductions (e.g., MAD-based SHAP filtering, TrustDB state machines), which are intentional engineering trade-offs for bare-metal IIoT hardware, and the exact Zero-Trust NGINX mTLS routing used to secure this execution over public networks.
+
 ---
 
 ## Overview
@@ -269,12 +274,6 @@ python3 tools/plot_metrics.py --panels loss asr pgd
 **Available Panels:** `accuracy_f1`, `loss`, `asr`, `pgd`, `fgsm`.
 
 Generated plots will be saved to `results/experiment_name/`.
-
----
-
-## Architecture Parity Report
-
-For a detailed breakdown of how this Flower-based implementation compares to the theoretical architecture proposed in the original paper—including practical design decisions, programmatic adaptations, and security trade-offs—please refer to the **[ZTA-FL Architecture Parity Report](ZTA_FL_Architecture_Parity_Report.md)** included in this repository.
 
 ---
 

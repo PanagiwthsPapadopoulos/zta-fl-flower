@@ -1,7 +1,7 @@
 #!/bin/bash
 # =========================================================
 # setup_security.sh
-# Generates static TLS certificates for the Cloud/Fog boundary
+# Generates strict RFC 5280 compliant TLS certificates for the Cloud/Fog boundary
 # and mTLS certificates for the NGINX/Edge boundary.
 #
 # ARGUMENTS:
@@ -13,14 +13,14 @@
 #   ./setup_security.sh 3 "2 0 4" 192.168.1.100
 # =========================================================
 
-# 1. Enforce strict arguments
-if [ "$#" -lt 2 ]; then
-    echo "Usage: $0 <num_fogs> <edges_per_fog_string> [broker_ip]" > /dev/tty
-    exit 1
+# 1. Enforce safe fallbacks to prevent syntax crashes if boot script fails
+NUM_FOGS=${1:-1}
+if ! [[ "$NUM_FOGS" =~ ^[0-9]+$ ]] || [ "$NUM_FOGS" -lt 1 ]; then 
+    NUM_FOGS=1 
 fi
 
-NUM_FOGS=$1
-read -r -a EDGES_ARRAY <<< "$2"
+EDGES_STRING=${2:-"1"}
+read -r -a EDGES_ARRAY <<< "$EDGES_STRING"
 BROKER_IP=${3:-127.0.0.1}
 
 # Path resolution
@@ -37,20 +37,7 @@ echo "[SECURITY SETUP INITIATED]" > "$SEC_LOG"
 # =========================================================
 # 2. PROTECTION CHECK FOR STATIC IDENTITIES
 # =========================================================
-# Evaluate existence of active certificate directories to avoid overwriting established Trust anchors
-if [ -d "$CERTS_DIR" ] && [ "$(ls -A "$CERTS_DIR" 2>/dev/null)" ]; then
-    # Route read strictly to /dev/tty so the prompt survives output capture
-    echo "⚠️  Existing certificates found in $CERTS_DIR." > /dev/tty
-    read -p "Do you want to wipe them and regenerate a new identity? (y/n) " -n 1 -r < /dev/tty
-    echo > /dev/tty
-    
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        # This string is caught by boot_network.sh
-        echo "STATUS:KEPT" 
-        exit 0
-    fi
-    rm -rf "$CERTS_DIR"
-fi
+rm -rf "$CERTS_DIR"
 
 # Provision hierarchy paths for Cloud and Edge Certificate Authorities
 mkdir -p "$CERTS_DIR/cloud_ca"
@@ -61,10 +48,25 @@ mkdir -p "$CERTS_DIR/edge_ca"
 # PHASE 1: CLOUD-FOG STANDARD TLS (FLOWER)
 # =========================================================
 echo "[LOG] Generating Cloud CA..." >> "$SEC_LOG"
-# Establish root Certificate Authority for the central Cloud orchestrator
+
+# OS-Agnostic OpenSSL CA Config
+cat <<EOF > "$CERTS_DIR/cloud_ca/ca.cnf"
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_ca
+prompt = no
+
+[req_distinguished_name]
+CN = ZTA-Cloud-Root-CA
+
+[v3_ca]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+EOF
+
 openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
     -keyout "$CERTS_DIR/cloud_ca/ca.key" -out "$CERTS_DIR/cloud_ca/ca.crt" \
-    -subj "/CN=ZTA-Cloud-Root-CA" >> "$SEC_LOG" 2>&1
+    -config "$CERTS_DIR/cloud_ca/ca.cnf" -extensions v3_ca >> "$SEC_LOG" 2>&1
 
 echo "[LOG] Generating Cloud SuperLink CSR..." >> "$SEC_LOG"
 # Generate CSR and private key for the Cloud SuperLink
@@ -74,6 +76,9 @@ openssl req -nodes -newkey rsa:2048 \
     
 # Create isolated SAN (Subject Alternative Name) extension for the Cloud Server to pass gRPC domain validation
 cat <<EOF > "$CERTS_DIR/cloud_server/san.ext"
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, nonRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
 subjectAltName = IP:$BROKER_IP,DNS:localhost,DNS:cloud-superlink
 EOF
     
@@ -87,15 +92,28 @@ openssl x509 -req -in "$CERTS_DIR/cloud_server/server.csr" \
 # PHASE 2: EDGE-FOG MUTUAL TLS (NGINX)
 # =========================================================
 echo "[LOG] Generating Edge CA..." >> "$SEC_LOG"
-# Establish independent Certificate Authority specifically for Edge-level mTLS validation
+
+cat <<EOF > "$CERTS_DIR/edge_ca/ca.cnf"
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_ca
+prompt = no
+
+[req_distinguished_name]
+CN = ZTA-Edge-Root-CA
+
+[v3_ca]
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, digitalSignature, cRLSign, keyCertSign
+EOF
+
 openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
     -keyout "$CERTS_DIR/edge_ca/ca.key" -out "$CERTS_DIR/edge_ca/ca.crt" \
-    -subj "/CN=ZTA-Edge-Root-CA" >> "$SEC_LOG" 2>&1
+    -config "$CERTS_DIR/edge_ca/ca.cnf" -extensions v3_ca >> "$SEC_LOG" 2>&1
 
-for i in $(seq 1 "$NUM_FOGS"); do
-    # Fallback to 0 if the array is shorter than NUM_FOGS
-    CURRENT_EDGES=${EDGES_ARRAY[$((i-1))]:-0}
-    
+for (( i=1; i<=NUM_FOGS; i++ )); do
+    CURRENT_EDGES=${EDGES_ARRAY[$((i-1))]:-1} 
+
     FOG_DIR="$CERTS_DIR/fog_${i}"
     mkdir -p "$FOG_DIR"
     
@@ -105,8 +123,11 @@ for i in $(seq 1 "$NUM_FOGS"); do
         -keyout "$FOG_DIR/nginx.key" -out "$FOG_DIR/nginx.csr" \
         -subj "/CN=fog-${i}-nginx" >> "$SEC_LOG" 2>&1
         
-    # Create isolated SAN extension for this specific Fog Nginx Sidecar
-    cat <<EOF > "$FOG_DIR/san.ext"
+# CRITICAL FIX: EOF must be completely flush left
+cat <<EOF > "$FOG_DIR/san.ext"
+basicConstraints = critical, CA:FALSE
+keyUsage = critical, nonRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
 subjectAltName = IP:$BROKER_IP,DNS:localhost,DNS:fog-${i}-nginx
 EOF
         
@@ -118,7 +139,7 @@ EOF
 
     # Only attempt to generate Edge certificates if this Fog actually has Edges
     if [ "$CURRENT_EDGES" -gt 0 ]; then
-        for j in $(seq 1 "$CURRENT_EDGES"); do
+        for (( j=1; j<=CURRENT_EDGES; j++ )); do
             EDGE_DIR="$CERTS_DIR/edge_${i}_${j}"
             mkdir -p "$EDGE_DIR"
             
@@ -127,23 +148,29 @@ EOF
             openssl req -nodes -newkey rsa:2048 \
                 -keyout "$EDGE_DIR/client.key" -out "$EDGE_DIR/client.csr" \
                 -subj "/CN=edge-agent-${i}-${j}" >> "$SEC_LOG" 2>&1
+
+                        
+            # Add strict clientAuth extension to the Edge Client
+cat <<EOF > "$EDGE_DIR/client.ext"
+basicConstraints = CA:FALSE
+keyUsage = critical, nonRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage = clientAuth, serverAuth
+EOF
+
                 
             echo "[LOG] Signing Edge ${i}_${j} Client Certificate..." >> "$SEC_LOG"
             # Issue signed client certificate required for backend authentication
             openssl x509 -req -in "$EDGE_DIR/client.csr" \
                 -CA "$CERTS_DIR/edge_ca/ca.crt" -CAkey "$CERTS_DIR/edge_ca/ca.key" -CAcreateserial \
-                -out "$EDGE_DIR/client.crt" -days 3650 >> "$SEC_LOG" 2>&1
+                -out "$EDGE_DIR/client.crt" -days 3650 -extfile "$EDGE_DIR/client.ext" >> "$SEC_LOG" 2>&1
         done
     fi
 done
 
-# Cleanup temporary generation files to leave the PKI directory strictly production-ready
-find "$CERTS_DIR" -type f -name "*.csr" -delete
-find "$CERTS_DIR" -type f -name "*.srl" -delete
-find "$CERTS_DIR" -type f -name "*.ext" -delete
+# Cleanup
+find "$CERTS_DIR" -type f \( -name "*.csr" -o -name "*.srl" -o -name "*.ext" -o -name "*.cnf" \) -delete
 
 echo "[SECURITY SETUP COMPLETED SUCCESSFULLY]" >> "$SEC_LOG"
 
-# This string is caught by boot_network.sh
 echo "STATUS:GENERATED"
 exit 0

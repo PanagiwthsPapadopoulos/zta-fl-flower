@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-#   deply_code_docker.sh
+#   deploy_code_docker.sh
 # 
 #   Acts as the "Fuel" for the infrastructure. Deploys code
 #   bundles (FABs) to the SuperLink network dynamically.
@@ -115,6 +115,14 @@ done
 # 3. FAB DEPLOYMENT DISPATCH
 # =========================================================
 pkill -f "flwr run" 2>/dev/null
+
+# Injecting Zero_trust PKI into GRPC
+if [ -f "$PROJECT_ROOT/src/network/certs/cloud_ca/ca.crt" ]; then
+    COMBINED_CA="$PROJECT_ROOT/src/network/certs/combined_ca.crt"
+    cat "$PROJECT_ROOT/src/network/certs/cloud_ca/ca.crt" "$PROJECT_ROOT/src/network/certs/edge_ca/ca.crt" > "$COMBINED_CA" 2>/dev/null
+    export GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="$COMBINED_CA"
+    echo "🔒 Custom Root CAs injected into the gRPC environment."
+fi
 
 for i in $(seq 1 $NUM_FOGS); do
     CURRENT_EDGES=${EDGES_PER_FOG_ARRAY[$((i-1))]:-0}

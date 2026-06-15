@@ -77,7 +77,10 @@ class EdgeTrainer:
             from src.security.attestation.tpm_core import TPMEngine
             tpm_engine = TPMEngine(logger=self.logger)
             nonce = config.get("nonce", f"round_{current_round}_default")
-            tpm_token = tpm_engine.generate_attestation_token(nonce)
+            
+            # Explicitly pass the node's log prefix as the software label
+            tpm_token = tpm_engine.generate_attestation_token(nonce=nonce, software_label=self.log_prefix)
+            
             metadata["tpm_token_json"] = json.dumps(tpm_token)
         
         return self.get_parameters(), len(self.train_loader.dataset), metadata
