@@ -176,8 +176,41 @@ def run_edge_trainer_diagnostics():
         else:
             logger.error("❌ ZTA Strategy failed to attach TPM token to metadata.")
             sys.exit(1)
+        mock_tpm_instance.generate_attestation_token.assert_called_once_with(
+            nonce="test_nonce",
+            software_label="[TEST_EDGE]",
+        )
             
         logger.info("✅ Honest routing verified perfectly.")
+
+    # =====================================================================
+    # TEST 2B: Real Insecure TPM Attestation Smoke Test
+    # =====================================================================
+    print_separator("Real TPMEngine Insecure-Mode Attestation Handoff")
+
+    trainer.train_config = honest_config
+
+    with patch.dict(os.environ, {"ZTA_INSECURE_MODE": "true"}), \
+         patch('src.federation.edge_trainer.local_train_honest', return_value=0.2468):
+
+        _, _, metadata = trainer.execute_training(
+            parameters=compressed_params,
+            current_round=2,
+            strategy="zta",
+            config={"nonce": "strict_nonce"},
+        )
+
+        try:
+            tpm_token = json.loads(metadata["tpm_token_json"])
+        except Exception as e:
+            logger.error(f"❌ Real TPMEngine smoke test failed to parse attestation metadata: {e}")
+            sys.exit(1)
+
+        if tpm_token.get("status") != "insecure_bypass" or tpm_token.get("IDi") != "[TEST_EDGE]":
+            logger.error(f"❌ Real TPMEngine smoke test produced unexpected token: {tpm_token}")
+            sys.exit(1)
+
+        logger.info("✅ Real TPMEngine insecure-mode handoff verified with nonce and software_label.")
 
     # =====================================================================
     # TEST 3: Static Adversarial Split Verification (Robustness)
