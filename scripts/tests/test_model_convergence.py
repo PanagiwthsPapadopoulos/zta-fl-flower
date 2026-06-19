@@ -12,7 +12,7 @@ if '/app' not in sys.path:
     sys.path.insert(0, '/app')
 
 from src.utils.config_loader import load_yaml_configs
-from src.federation.edge_trainer import EdgeTrainer
+from src.core.edge_trainer import EdgeTrainer
 
 # =====================================================================
 # Logger Configuration

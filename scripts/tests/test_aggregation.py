@@ -12,11 +12,11 @@ import torch.nn as nn
 if '/app' not in sys.path:
     sys.path.insert(0, '/app')
 
-from src.federation.aggregation import shap_weighted_aggregate
+from src.federation.strategies.aggregation import shap_weighted_aggregate
 from src.utils.config_loader import load_yaml_configs
 
 # IMPORTANT: Adjust the import path if data_loader.py lives in a different directory (e.g., src.data.data_loader)
-from src.utils.data_loader import DATASET_METADATA
+from src.data.data_loader import DATASET_METADATA
 
 # =====================================================================
 # Logger Configuration

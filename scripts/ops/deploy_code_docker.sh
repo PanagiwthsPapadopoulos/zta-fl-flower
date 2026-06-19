@@ -117,9 +117,9 @@ done
 pkill -f "flwr run" 2>/dev/null
 
 # Injecting Zero_trust PKI into GRPC
-if [ -f "$PROJECT_ROOT/src/network/certs/cloud_ca/ca.crt" ]; then
-    COMBINED_CA="$PROJECT_ROOT/src/network/certs/combined_ca.crt"
-    cat "$PROJECT_ROOT/src/network/certs/cloud_ca/ca.crt" "$PROJECT_ROOT/src/network/certs/edge_ca/ca.crt" > "$COMBINED_CA" 2>/dev/null
+if [ -f "$PROJECT_ROOT/runtime/certs/cloud_ca/ca.crt" ]; then
+    COMBINED_CA="$PROJECT_ROOT/runtime/certs/combined_ca.crt"
+    cat "$PROJECT_ROOT/runtime/certs/cloud_ca/ca.crt" "$PROJECT_ROOT/runtime/certs/edge_ca/ca.crt" > "$COMBINED_CA" 2>/dev/null
     export GRPC_DEFAULT_SSL_ROOTS_FILE_PATH="$COMBINED_CA"
     echo "🔒 Custom Root CAs injected into the gRPC environment."
 fi

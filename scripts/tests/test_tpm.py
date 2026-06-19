@@ -4,7 +4,7 @@ import time
 import logging
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from security.attestation.tpm_core import TPMEngine
+from src.security.attestation.tpm_core import TPMEngine
 
 # =====================================================================
 # Logger Configuration
@@ -18,7 +18,7 @@ formatter = logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s', dat
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-PUBLIC_KEY_PATH = "/app/tpm_state/ak.pub"
+PUBLIC_KEY_PATH = "/runtime/tpm_state/ak.pub"
 
 def print_separator(title: str):
     print("\n" + "="*80)

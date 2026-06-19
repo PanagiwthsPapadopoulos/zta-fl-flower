@@ -2,7 +2,6 @@
 run_name: ""                            # String identifier for output JSON logs (blank = auto timestamp)
 strategy: "zta"                         # Aggregation algorithm (zta, ztafl, fedavg, fedprox, krum, trimmed_mean, flame, fltrust)
 num_rounds: 3                           # Total number of global federated communication rounds
-min-clients: 1                          # Minimum active connections required to begin a round
 
 # Dataset
 dataset: "edge_iiotset"                 # Target dataset identifier mapped in data_loader.py

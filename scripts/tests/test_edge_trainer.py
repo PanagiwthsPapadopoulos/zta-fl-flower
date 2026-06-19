@@ -14,10 +14,10 @@ if '/app' not in sys.path:
     sys.path.insert(0, '/app')
 
 from src.utils.config_loader import load_yaml_configs
-from src.utils.data_loader import DATASET_METADATA
+from src.data.data_loader import DATASET_METADATA
 
 # IMPORTANT: Adjust the import path below if edge_trainer.py lives in a different directory (e.g., src.client.edge_trainer)
-from src.federation.edge_trainer import EdgeTrainer
+from src.core.edge_trainer import EdgeTrainer
 
 # =====================================================================
 # Logger Configuration

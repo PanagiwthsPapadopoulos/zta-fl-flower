@@ -15,13 +15,13 @@ from torch.utils.data import DataLoader, TensorDataset
 from flwr.common import Context
 from flwr.client import NumPyClient, ClientApp
 
-from src.security.attacks.adversarial import local_train_byzantine, local_train_honest
-from src.security.attacks.backdoor import poison_partition
-from src.utils.data_loader import get_dataset, DATASET_METADATA, non_iid_partition
+from src.security.threat_engine.adversarial import local_train_byzantine, local_train_honest
+from src.security.threat_engine.backdoor import poison_partition
+from src.data.data_loader import get_dataset, DATASET_METADATA, non_iid_partition
 from src.utils.logger_setup import setup_logger
 from src.network.ipc import send_msg, recv_msg
 from src.models.factory import get_model
-from src.utils.compression import compress_weights, decompress_weights
+from src.network.compression import compress_weights, decompress_weights
 
 GLOBAL_DATA_CACHE = {}
 
@@ -34,11 +34,12 @@ class Client(NumPyClient):
     gradient payloads back up the chain.
     """
     
-    def __init__(self, logger, node_type: str, log_prefix: str, fog_num: int, model=None, train_loader=None, device="cpu", dataset_metadata=None, train_config=None):
+    def __init__(self, logger, node_type: str, log_prefix: str, fog_num: int, edge_num: int, model=None, train_loader=None, device="cpu", dataset_metadata=None, train_config=None):
         self.logger = logger
         self.node_type = node_type
         self.log_prefix = log_prefix
         self.fog_num = fog_num
+        self.edge_num = edge_num
         self.model = model
         self.train_loader = train_loader
         self.device = device
@@ -52,7 +53,17 @@ class Client(NumPyClient):
             fog_ipc_base = int(self.train_config.get("fog_ipc_base", 10000))
             self.ipc_port = fog_ipc_base + self.fog_num
         elif self.node_type == "edge":
-            from src.federation.edge_trainer import EdgeTrainer
+            from src.core.edge_trainer import EdgeTrainer
+            from src.security.threat_engine.adversary_manager import AdversaryManager
+
+            self.adversary_manager = AdversaryManager(
+                fog_num=self.fog_num, 
+                edge_num=self.edge_num, 
+                logger=self.logger
+            )
+
+            self.train_loader = self.adversary_manager.corrupt_data_if_needed(self.train_loader)
+
             self.trainer = EdgeTrainer(
                 logger=self.logger, log_prefix=self.log_prefix, model=self.model,
                 train_loader=self.train_loader, device=self.device,
@@ -60,21 +71,14 @@ class Client(NumPyClient):
             )
 
     def get_parameters(self, config: dict) -> list:
-        """Provides initial weights if Flower randomly selects this node at Round 0."""
         if self.node_type == "edge":
             return self.trainer.get_parameters()
             
-        # Fog clients must also return valid initialized weights to satisfy Flower's boot checks
         weights = [val.cpu().numpy() for _, val in self.model.state_dict().items()]
         bits = int(self.train_config.get("quantization_bits", 32))
         return compress_weights(weights, bits)
 
     def fit(self, parameters: list, config: dict):
-        """
-        Triggers the primary local processing loops. Maps directly to the assigned
-        hardware type—bridging TCP sockets for intermediate fog nodes or grinding out
-        the backpropagation for standard edge devices.
-        """
         try:
             current_round = config.get("server_round", 0)
             strategy = config.get("strategy", "fedavg")
@@ -83,21 +87,23 @@ class Client(NumPyClient):
                 from src.network.fog_bridge import FogBridgeClient
                 bridge = FogBridgeClient(self.logger, self.log_prefix, self.ipc_port, self.socket_timeout)
                 return bridge.execute_round(current_round)
-            elif self.node_type == "edge":
-                return self.trainer.execute_training(parameters, current_round, strategy, config)                
+            elif self.node_type == "edge":                
+                self.adversary_manager.current_round = current_round
+                
+                res_params, num_examples, metrics = self.trainer.execute_training(parameters, current_round, strategy, config)
+                
+                metrics["log_prefix"] = self.log_prefix
+                res_params, metrics = self.adversary_manager.corrupt_payload_if_needed(res_params, metrics)
+                return res_params, num_examples, metrics                
         except Exception as e:
             self.logger.error(f"{self.log_prefix} CRITICAL SILENT CRASH: {e}\n{traceback.format_exc()}", extra={"round": 0})
             return [], 0, {"status": "crashed"}
 
     def evaluate(self, parameters: list, config: dict):
-        """Forces localized evaluation returns into a neutral state to preserve computation bounds."""
         return 0.0, 1, {"accuracy": 1.0}
 
 
 def _build_fog_client(run_config: dict, node_config: dict):
-    """
-    Spins up the fog client structures binding the intermediate agents to their assigned TCP communication boundaries.
-    """
     raw_fog_val = str(node_config.get("fog_id", "0"))
     fog_num = int(''.join(filter(str.isdigit, raw_fog_val))) if any(c.isdigit() for c in raw_fog_val) else 0
     node_type = "fog_client" 
@@ -112,43 +118,7 @@ def _build_fog_client(run_config: dict, node_config: dict):
     logger = setup_logger(log_prefix)
     return logger, node_type, log_prefix, fog_num, train_config
 
-    """
-    Computes strict assignments distributing adversarial identities across the edge grid
-    based entirely on fixed mathematical ratios drawn from the primary configuration parameters.
-    """
-    pgd_ratio = float(run_config.get("pgd_ratio", 0.0))
-    fgsm_ratio = float(run_config.get("fgsm_ratio", 0.0))
-    backdoor_ratio = float(run_config.get("backdoor_ratio", 0.0))
-    label_flip_ratio = float(run_config.get("label_flip_ratio", 0.0))
-    grad_manip_ratio = float(run_config.get("grad_manip_ratio", 0.0))
-    shap_aware_ratio = float(run_config.get("shap_aware_ratio", 0.0))
-
-    num_pgd = round(total_edges * pgd_ratio)
-    num_fgsm = round(total_edges * fgsm_ratio)
-    num_backdoor = round(total_edges * backdoor_ratio)
-    num_label_flip = round(total_edges * label_flip_ratio)
-    num_grad_manip = round(total_edges * grad_manip_ratio)
-    num_shap_aware = round(total_edges * shap_aware_ratio)
-
-    logger.debug(f"[CONFIG USAGE] _assign_edge_roles | pgd_ratio: {pgd_ratio}, fgsm_ratio: {fgsm_ratio}, backdoor_ratio: {backdoor_ratio}, label_flip_ratio: {label_flip_ratio}, grad_manip_ratio: {grad_manip_ratio}")
-    
-    total_attackers = num_pgd + num_fgsm + num_backdoor + num_label_flip + num_grad_manip + num_shap_aware
-    num_benign = max(0, total_edges - total_attackers)
-    
-    role_list = ["pgd"] * num_pgd + ["fgsm"] * num_fgsm + ["backdoor"] * num_backdoor
-    role_list += ["label_flip"] * num_label_flip + ["gradient_manip"] * num_grad_manip
-    role_list += ["shap_aware"] * num_shap_aware
-    role_list += ["benign"] * num_benign
-    
-    random.Random(master_seed).shuffle(role_list) 
-    role = role_list[global_index % total_edges] if len(role_list) > 0 else "benign"
-    return role
-
 def client_fn(context: Context):
-    """
-    Generates the local execution arrays matching the provided execution parameters.
-    Handles topology routing and hard-binds designated operational states.
-    """
     from src.utils.config_loader import get_merged_config
     run_config = get_merged_config(context.run_config)
     node_config = context.node_config
@@ -172,9 +142,12 @@ def client_fn(context: Context):
     random_seed = int(run_config.get("random_seed", 42))
     test_split=float(run_config.get("test_split", 0.30))
     val_split=float(run_config.get("val_split", 0.50))
+
+    edge_num = 0
     
     if "partition-id" in node_config:
         partition_id = int(node_config["partition-id"]) 
+        edge_num = partition_id
         internal_id = partition_id - 1 
         
         raw_fog_val = str(node_config.get("fog_num", "0"))
@@ -200,7 +173,7 @@ def client_fn(context: Context):
             edges_before_me = sum(topology[:fog_num-1]) if fog_num > 1 else 0
             global_index = edges_before_me + internal_id 
 
-            from src.security.threat_profiler import assign_edge_roles
+            from src.security.threat_engine.threat_profiler import assign_edge_roles
             role = assign_edge_roles(run_config, total_edges, global_index, master_seed, logger)
                 
             train_config = {
@@ -249,11 +222,13 @@ def client_fn(context: Context):
             
             if cache_key not in GLOBAL_DATA_CACHE:
                 
-                if simulate_leakage:
-                    X_full, y_full, n_classes_eval = get_dataset(dataset_name, dataset_path, num_classes, random_seed, simulate_global_leakage=True, apply_smote=apply_smote, split="train", test_split=test_split, val_split=val_split)
-                    server_scaler, server_pca = None, None
-                else:
-                    X_full, y_full, n_classes_eval, server_scaler, server_pca = get_dataset(dataset_name, dataset_path, num_classes, random_seed, simulate_global_leakage=False, apply_smote=apply_smote, split="train", test_split=test_split, val_split=val_split)
+                # 🚨 FIX: Data Loader now universally returns 3 fully scaled parameters regardless of isolation mode!
+                X_full, y_full, n_classes_eval = get_dataset(
+                    dataset_name, dataset_path, num_classes, random_seed, 
+                    simulate_global_leakage=simulate_leakage, 
+                    apply_smote=apply_smote, split="train", 
+                    test_split=test_split, val_split=val_split
+                )
                     
                 generator = torch.Generator().manual_seed(random_seed)
                 indices = torch.randperm(len(X_full), generator=generator)
@@ -265,9 +240,9 @@ def client_fn(context: Context):
                     X_full = X_full[:subset_size]
                     y_full = y_full[:subset_size]
                     
-                GLOBAL_DATA_CACHE[cache_key] = (X_full, y_full, n_classes_eval, server_scaler, server_pca)
+                GLOBAL_DATA_CACHE[cache_key] = (X_full, y_full, n_classes_eval)
             else:
-                X_full, y_full, n_classes_eval, server_scaler, server_pca = GLOBAL_DATA_CACHE[cache_key]
+                X_full, y_full, n_classes_eval = GLOBAL_DATA_CACHE[cache_key]
 
             power_law_a = float(run_config.get("power_law_a", 0.4))
             partitions = non_iid_partition(X=X_full, y=y_full, n_agents=total_edges, n_classes_per=n_classes_per, power_law_a=power_law_a, seed=master_seed)
@@ -286,14 +261,9 @@ def client_fn(context: Context):
                     trigger_features=tuple(trigger_features), trigger_value=trigger_value, seed=(master_seed + global_index) 
                 )
             
-            if not simulate_leakage:
-                X_part_np = X_part.numpy() if isinstance(X_part, torch.Tensor) else X_part
-                X_part_np = server_scaler.transform(X_part_np)
-                X_part_np = server_pca.transform(X_part_np)
-                X_part = torch.tensor(X_part_np, dtype=torch.float32)
-            else:
-                if not isinstance(X_part, torch.Tensor):
-                    X_part = torch.tensor(X_part, dtype=torch.float32)
+            # 🚨 FIX: Removed the redundant double-scaling logic entirely! Data is already pre-scaled.
+            if not isinstance(X_part, torch.Tensor):
+                X_part = torch.tensor(X_part, dtype=torch.float32)
 
             dataset = TensorDataset(X_part, y_part)
             batch_size = int(run_config.get("batch_size", 32))
@@ -321,7 +291,7 @@ def client_fn(context: Context):
     return Client(
         logger=logger, node_type=node_type, log_prefix=log_prefix, fog_num=fog_num, 
         model=model, train_loader=train_loader, device=device, 
-        dataset_metadata=dataset_metadata, train_config=train_config
+        dataset_metadata=dataset_metadata, train_config=train_config, edge_num=edge_num,
     ).to_client()
 
 app = ClientApp(client_fn=client_fn)

@@ -5,8 +5,8 @@ import traceback
 from collections import OrderedDict
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.security.attacks.adversarial import local_train_byzantine, local_train_honest
-from src.utils.compression import compress_weights, decompress_weights
+from src.security.threat_engine.adversarial import local_train_byzantine, local_train_honest
+from src.network.compression import compress_weights, decompress_weights
 
 class EdgeTrainer:
     """
@@ -122,10 +122,10 @@ class EdgeTrainer:
                 continue
                 
             if role == "pgd":
-                from src.security.attacks.adversarial import pgd_attack
+                from src.security.threat_engine.adversarial import pgd_attack
                 chunk_adv = pgd_attack(model=self.model, x=X_chunk, y=y_chunk, eps=eps, alpha=alpha, clip_min=clip_min, clip_max=clip_max)
             else: 
-                from src.security.attacks.adversarial import fgsm_attack
+                from src.security.threat_engine.adversarial import fgsm_attack
                 chunk_adv = fgsm_attack(model=self.model, x=X_chunk, y=y_chunk, alpha=eps, clip_min=clip_min, clip_max=clip_max)
             X_adv_list.append(chunk_adv.cpu())
 
@@ -142,13 +142,13 @@ class EdgeTrainer:
         self.logger.debug(f"[CONFIG USAGE] _train_standard_or_poison | clip_norm: {clip_norm}")
         
         if strategy == "fedprox" and role not in ["label_flip", "backdoor", "gradient_manip"]:
-            from src.federation.aggregation import fedprox_update
+            from src.federation.strategies.aggregation import fedprox_update
             fedprox_mu = float(self.train_config.get("fedprox_mu", 0.01))
             return fedprox_update(model=self.model, global_model=global_model, loader=active_loader, optimizer=optimizer, mu=fedprox_mu, device=self.device)
             
         elif role in ["backdoor", "label_flip", "gradient_manip", "shap_aware"]:
             if role == "shap_aware":
-                from src.security.attacks.adversarial import local_train_shap_aware
+                from src.security.threat_engine.adversarial import local_train_shap_aware
                 shap_tau = float(self.train_config.get("shap_tau", 0.15))
                 shap_aware_base_attack = self.train_config.get("shap_aware_base_attack", "label_flip")
                 return local_train_shap_aware(

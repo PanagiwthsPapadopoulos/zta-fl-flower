@@ -1,3 +1,8 @@
+# Topology
+num_fogs: 2                             # Total number of intermediary Fog nodes operating in the network
+uniform_edges_per_fog: 2                # Forces each Fog to control exactly this many Edge devices
+custom_fog_topology: "[]"               # Array string overriding uniform edges (e.g., "[3, 1]")
+
 # Infrastructure
 broker_ip: "127.0.0.1"                  # Global IP address of the broker routing traffic across the network
 socket_timeout: 3600.0                  # Maximum time (seconds) to wait for network IPC responses before throwing a TimeoutError
@@ -6,7 +11,6 @@ socket_timeout: 3600.0                  # Maximum time (seconds) to wait for net
 cloud_sa_port: 9001                     # Flower SuperLink API Port
 cloud_fl_port: 9002                     # Flower Fleet API Port
 cloud_ctrl_port: 9003                   # Flower ServerApp Execution Port
-
 
 # Fog Port Bases (Supports up to 99 Fogs safely. e.g., Fog 1 uses 9101, Fog 2 uses 9102)
 fog_sa_base: 9100                       # Base port for Fog SuperLink APIs
@@ -19,4 +23,4 @@ fog_ipc_base: 9500                      # Base port for the custom ZTA-FL Socket
 edge_client_io_base: 10000              # Base port for Edge Client Node connections (Supports 99 edges per fog)
 
 # Communication
-quantization_bits: 32                   # Bit-width for dynamic payload compression (8=INT8, 16=FP16, 32=FP32/Disabled)
+quantization_bits: 16                   # Bit-width for dynamic payload compression (8=INT8, 16=FP16, 32=FP32/Disabled)

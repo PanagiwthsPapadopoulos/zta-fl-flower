@@ -232,14 +232,12 @@ def get_dataset(
     X_raw, y_raw = loaders[dataset_name](dataset_path)
     target_features = DATASET_METADATA[dataset_name]["features"]
     
-    # Enforces a strict stratified distribution across training, validation, and testing sets.
     X_train, X_temp, y_train, y_temp = train_test_split(X_raw, y_raw, test_size=test_split, stratify=y_raw, random_state=random_seed)
     X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=val_split, stratify=y_temp, random_state=random_seed)    
     scaler = MinMaxScaler()
     pca = PCA(n_components=target_features)
     
     if simulate_global_leakage:
-        # Executes global normalization where bounds align indiscriminately ignoring distinct boundaries.
         scaler.fit(X_train)
         X_train_scaled = scaler.transform(X_train)
         
@@ -273,25 +271,39 @@ def get_dataset(
         result = (X_tensor, y_tensor, num_classes)
 
     else:
-        # Executes strict segregated isolation mode ensuring scaling logic respects bounds entirely.
-        # Fits the scaler exclusively on training data and transforms validation/test splits to maintain dimensional integrity.
+        # 🚨 FIX: Pre-scale and Pre-transform the Isolated Data using the training baseline!
         scaler.fit(X_train)
         X_train_scaled = scaler.transform(X_train)
-        pca.fit(X_train_scaled)
+        
+        if X_train_scaled.shape[1] >= target_features:
+            pca.fit(X_train_scaled)
         
         if split == "train":
-            X_target, y_target = X_train, y_train
+            X_target, y_target = X_train_scaled, y_train
         elif split == "val":
-            X_target, y_target = X_val, y_val
+            X_target, y_target = scaler.transform(X_val), y_val
         elif split == "test":
-            X_target, y_target = X_test, y_test
+            X_target, y_target = scaler.transform(X_test), y_test
         else:
             raise ValueError(f"Invalid split: {split}")
             
-        X_tensor = torch.tensor(X_target, dtype=torch.float32)
-        y_tensor = torch.tensor(y_target, dtype=torch.long)
+        if X_target.shape[1] > target_features:
+            X_target = pca.transform(X_target).astype(np.float32)
+        elif X_target.shape[1] < target_features:
+            pad = np.zeros((X_target.shape[0], target_features - X_target.shape[1]), dtype=np.float32)
+            X_target = np.concatenate([X_target, pad], axis=1)
+
+        if apply_smote and split == "train":
+            smote = SMOTE(random_state=random_seed)
+            X_resampled, y_resampled = smote.fit_resample(X_target, y_target)
+        else:
+            X_resampled, y_resampled = X_target, y_target
             
-        result = (X_tensor, y_tensor, num_classes, scaler, pca)
+        X_tensor = torch.tensor(X_resampled, dtype=torch.float32)
+        y_tensor = torch.tensor(y_resampled, dtype=torch.long)
+            
+        # 🚨 UNIFIED RETURN: Always strictly return the pre-processed tensors!
+        result = (X_tensor, y_tensor, num_classes)
         
     _MASTER_DATA_CACHE[cache_key] = result
     return result

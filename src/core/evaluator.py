@@ -6,12 +6,12 @@ from collections import OrderedDict
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.security.attacks.backdoor import compute_backdoor_asr
-from src.security.attacks.adversarial import evaluate_robustness
+from src.security.threat_engine.backdoor import compute_backdoor_asr
+from src.security.threat_engine.adversarial import evaluate_robustness
 from src.utils.metrics import accuracy, macro_f1
-from src.utils.data_loader import get_dataset
+from src.data.data_loader import get_dataset
 from src.models.factory import get_model
-from src.utils.compression import decompress_weights
+from src.network.compression import decompress_weights
 
 class GlobalEvaluator:
     """

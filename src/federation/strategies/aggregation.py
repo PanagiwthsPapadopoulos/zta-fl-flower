@@ -253,7 +253,7 @@ def shap_weighted_aggregate(
     sizes: List[int],
     n_classes: int = 15,
     n_explain: int = 10,
-) -> Tuple[nn.Module, float]: 
+) -> Tuple[nn.Module, float, List[bool]]: 
     """
 Runs parallel SHAP stability checks to weight and aggregate updates based on structural trust.
     Returns the aggregated model AND the total regional trust weight for Cloud use.
@@ -313,11 +313,14 @@ Runs parallel SHAP stability checks to weight and aggregate updates based on str
         
     filter_threshold = mu_s - (2 * sigma_s)
     surviving_models, surviving_weights = [], []
+    passed_flags = []
 
     for i, local_m in enumerate(local_models):
         if stability_scores[i] < filter_threshold:
+            passed_flags.append(False) 
             continue 
             
+        passed_flags.append(True) 
         local_m.eval()
         with torch.no_grad():
             preds = local_m(X_val).argmax(dim=-1)
@@ -330,12 +333,12 @@ Runs parallel SHAP stability checks to weight and aggregate updates based on str
     total_regional_trust = sum(surviving_weights)
 
     if not surviving_models:
-        return federated_averaging(local_models, weights=None), 0.0
+        return federated_averaging(local_models, weights=None), 0.0, passed_flags 
 
     normalized_weights = [w / total_regional_trust for w in surviving_weights] if total_regional_trust > 1e-12 else None
     agg_model = federated_averaging(surviving_models, weights=normalized_weights)
     
-    return agg_model, total_regional_trust
+    return agg_model, total_regional_trust, passed_flags 
 
 
 

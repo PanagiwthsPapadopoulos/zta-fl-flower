@@ -4,8 +4,8 @@ import logging
 
 # Ensure the src directory is in the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from security.policy.trust_db import TrustDatabase
-from security.attestation.tpm_core import TPMEngine
+from src.security.policy.trust_db import TrustDatabase
+from src.security.attestation.tpm_core import TPMEngine
 
 # =====================================================================
 # Logger Configuration
@@ -19,7 +19,7 @@ formatter = logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s', dat
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-PUBLIC_KEY_PATH = "/app/tpm_state/ak.pub"
+PUBLIC_KEY_PATH = "/runtime/tpm_state/ak.pub"
 SOFTWARE_LABEL = "EDGE_1_1"
 
 def print_separator(title: str):

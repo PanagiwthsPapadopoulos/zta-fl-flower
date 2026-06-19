@@ -3,13 +3,11 @@ import subprocess
 import base64
 import logging
 import re
+import uuid
 
 class TPMEngine:
     """
     Interface for TPM 2.0 hardware operations supporting zero-trust attestation.
-    
-    If the ZTA_INSECURE_MODE environment variable is set to true, the engine 
-    bypasses hardware dependencies to facilitate software-only testing.
     """
     def __init__(self, logger: logging.Logger, insecure_mode: bool = False):
         self.logger = logger
@@ -17,17 +15,13 @@ class TPMEngine:
         self.tcti = os.getenv("TPM2TOOLS_TCTI", "").strip()
         
         if not self.insecure_mode and self.tcti:
-            self.logger.info("TPMEngine: Hardware context detected. Initializing prover configuration.")
+            self.logger.info("TPMEngine: Hardware context detected. Initializing prover configuration.", extra={"round": 0})
             self._flush_tpm_memory()
             self._provision_ak()
         else:
-            self.logger.info("TPMEngine: Hardware context absent or insecure mode enabled. Defaulting to verifier-only mode.")
+            self.logger.info("TPMEngine: Hardware context absent or insecure mode enabled. Defaulting to verifier-only mode.", extra={"round": 0})
 
     def _flush_tpm_memory(self):
-        """
-        Clears transient object handles and session contexts from the TPM's volatile memory.
-        Prevents 0x902 (Out of Memory) errors during sequential operations.
-        """
         try:
             res = subprocess.run(["tpm2_getcap", "handles-transient"], capture_output=True, text=True)
             for handle in re.findall(r'0x[0-9a-fA-F]+', res.stdout):
@@ -40,22 +34,11 @@ class TPMEngine:
             pass 
 
     def _provision_ak(self):
-        """
-        Executes the provisioning sequence for the Attestation Key (AK).
-        
-        Procedure:
-        1. Verifies the existence of an AK at the target NVRAM index.
-        2. Generates a Primary Key and persists it to bypass transient memory constraints.
-        3. Creates the AK under the persistent parent.
-        4. Loads and evicts the AK to its final NVRAM destination.
-        5. Exports the public key for verifier access.
-        """
         try:
             if subprocess.run(["tpm2_readpublic", "-c", "0x81010002"], capture_output=True).returncode == 0:
                 return 
 
-            self.logger.info("TPMEngine: Initializing new Attestation Key (AK) provisioning sequence.")
-
+            self.logger.info("TPMEngine: Initializing new Attestation Key (AK) provisioning sequence.", extra={"round": 0})
             subprocess.run(["tpm2_createprimary", "-C", "o", "-c", "/tmp/primary.ctx"], check=True)
             subprocess.run(["tpm2_evictcontrol", "-C", "o", "-c", "/tmp/primary.ctx", "0x81000001"], check=True)
             self._flush_tpm_memory()
@@ -70,67 +53,58 @@ class TPMEngine:
             subprocess.run(["tpm2_load", "-C", "0x81000001", "-u", "/tmp/ak.pub", "-r", "/tmp/ak.priv", "-c", "/tmp/ak.ctx"], check=True)
             subprocess.run(["tpm2_evictcontrol", "-C", "o", "-c", "/tmp/ak.ctx", "0x81010002"], check=True)
             
-            subprocess.run(["cp", "/tmp/ak.pub", "/app/tpm_state/ak.pub"], check=True)
-            self.logger.info("TPMEngine: AK provisioning sequence completed successfully.")
-            
-        except subprocess.CalledProcessError as e:
-            err_msg = e.stderr.decode() if e.stderr else str(e)
-            self.logger.error(f"TPMEngine: Provisioning error: {err_msg}")
+            subprocess.run(["cp", "/tmp/ak.pub", "/runtime/tpm_state/ak.pub"], check=True)
+            self.logger.info("TPMEngine: AK provisioning sequence completed successfully.", extra={"round": 0})
         except Exception as e:
-            self.logger.error(f"TPMEngine: Unexpected failure during provisioning: {str(e)}")
+            self.logger.error(f"TPMEngine: Provisioning error: {str(e)}", extra={"round": 0})
         finally:
             self._flush_tpm_memory()
 
     def _get_hardware_identity(self) -> str:
-        """
-        Retrieves the cryptographic 'Name' of the Attestation Key.
-        Serves as the unique hardware identifier (IDi) for the edge device.
-        """
         try:
             res = subprocess.run(["tpm2_readpublic", "-c", "0x81010002"], capture_output=True, text=True, check=True)
             for line in res.stdout.split('\n'):
                 if line.strip().startswith("name:"):
                     return line.split("name:")[1].strip()
             return "UNKNOWN_HARDWARE_ID"
-        except Exception as e:
-            self.logger.error(f"TPMEngine: Identity extraction failed: {e}")
+        except Exception:
             return "UNKNOWN_HARDWARE_ID"
 
-    def generate_attestation_token(self, nonce: str, software_label: str) -> dict:
-        """
-        Reads the Platform Configuration Registers (PCRs) and generates a signed quote.
-        
-        Args:
-            nonce (str): A verifier-provided string to ensure payload freshness.
-            software_label (str): The logical identifier for network routing.
-            
-        Returns:
-            dict: The complete attestation tuple {IDi, t, PCR, SigTPM} encoded in base64.
-        """
+    def generate_attestation_token(self, nonce: str, software_label: str, round_num: int = 0) -> dict:
+        """Reads the PCRs and generates a signed quote using thread-safe temporary files."""
         if self.insecure_mode:
-            self.logger.debug("TPMEngine: Insecure mode active. Returning mock token.")
             return {"status": "insecure_bypass", "IDi": software_label, "pcr_hash": "dummy_hash", "signature": "dummy_sig"}
 
+        # EXTREME LOGGING: See exactly what the Edge Node is being told to sign
+        self.logger.debug(f"[TPM-GENERATE] Edge Node {software_label} preparing to sign NONCE: {nonce}", extra={"round": round_num})
+
+        # Thread-safe isolation paths
+        session_id = uuid.uuid4().hex
+        nonce_file = f"/tmp/nonce_{session_id}.bin"
+        msg_file = f"/tmp/quote_{session_id}.msg"
+        sig_file = f"/tmp/quote_{session_id}.sig"
+        pcr_file = f"/tmp/pcr_{session_id}.bin"
+
         try:
-            with open("/tmp/nonce.bin", "w") as f:
+            with open(nonce_file, "w") as f:
                 f.write(nonce)
 
             subprocess.run([
                 "tpm2_quote", "-c", "0x81010002", "-l", "sha256:0", 
-                "-q", "/tmp/nonce.bin", "-m", "/tmp/quote.msg", 
-                "-s", "/tmp/quote.sig", "-o", "/tmp/pcr.bin"
+                "-q", nonce_file, "-m", msg_file, 
+                "-s", sig_file, "-o", pcr_file
             ], check=True, capture_output=True)
 
             hardware_idi = self._get_hardware_identity()
 
-            with open("/tmp/quote.msg", "rb") as f:
+            with open(msg_file, "rb") as f:
                 msg_b64 = base64.b64encode(f.read()).decode('utf-8')
-            with open("/tmp/quote.sig", "rb") as f:
+            with open(sig_file, "rb") as f:
                 sig_b64 = base64.b64encode(f.read()).decode('utf-8')
-            with open("/tmp/pcr.bin", "rb") as f:
+            with open(pcr_file, "rb") as f:
                 pcr_b64 = base64.b64encode(f.read()).decode('utf-8')
             
-            self.logger.info(f"TPMEngine: Attestation token generated for IDi: {hardware_idi[:16]}...")
+            self.logger.info(f"TPMEngine: Attestation token generated for IDi: {hardware_idi[:16]}...", extra={"round": round_num})
             
             return {
                 "status": "attested",
@@ -140,58 +114,72 @@ class TPMEngine:
                 "signature": sig_b64,
                 "pcr_data": pcr_b64
             }
-            
-        except subprocess.CalledProcessError as e:
-            err_msg = e.stderr.decode() if e.stderr else str(e)
-            self.logger.error(f"TPMEngine: Hardware quoting failure: {err_msg}")
-            return {"status": "hardware_fault"}
         except Exception as e:
-            self.logger.error(f"TPMEngine: Execution error during token generation: {str(e)}")
+            self.logger.error(f"TPMEngine: Execution error during token generation: {str(e)}", extra={"round": round_num})
             return {"status": "error"}
+        finally:
+            # Clean up isolation files
+            for temp_file in [nonce_file, msg_file, sig_file, pcr_file]:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
 
-    def verify_attestation_token(self, token: dict, expected_nonce: str, public_key_path: str) -> bool:
-        """
-        Validates the signature, nonce, and PCR state of an incoming attestation token.
-        
-        Args:
-            token (dict): The base64-encoded token dictionary generated by the prover.
-            expected_nonce (str): The nonce originally issued by the verifier.
-            public_key_path (str): File system path to the prover's public key.
-            
-        Returns:
-            bool: True if cryptographic and logical verifications pass, False otherwise.
-        """
+    def verify_attestation_token(self, token: dict, expected_nonce: str, public_key_path: str, round_num: int = 0, expected_pcr: str = None) -> bool:
+        """Validates the signature and PCR health using thread-safe temporary files."""
         if self.insecure_mode or token.get("status") == "insecure_bypass":
-            self.logger.debug("TPMEngine: Insecure mode active. Token verification bypassed.")
             return True
-
+            
+        # Simulated key theft (attacker possesses valid private key)
+        if token.get("status") == "simulated_key_theft":
+            self.logger.critical(f"[TPM-VERIFY] ⚠️ SIMULATED KEY THEFT: Bypassing cryptography. The attacker possesses the valid private key!", extra={"round": round_num})
+            return True
+            
         if token.get("status") != "attested":
-            self.logger.warning("TPMEngine: Invalid token status detected. Rejecting.")
+            self.logger.warning(f"[TPM-VERIFY] Edge Node sent corrupted/error token: {token}", extra={"round": round_num})
             return False
 
-        try:
-            with open("/tmp/verify_quote.msg", "wb") as f:
-                f.write(base64.b64decode(token["quote_msg"]))
-            with open("/tmp/verify_quote.sig", "wb") as f:
-                f.write(base64.b64decode(token["signature"]))
+        hardware_idi = token.get('IDi', 'Unknown')
+        
+        self.logger.debug(f"[TPM-VERIFY] Fog Server evaluating token from IDi {hardware_idi[:16]}... EXPECTED NONCE: {expected_nonce}", extra={"round": round_num})
 
-            with open("/tmp/expected_nonce.bin", "w") as f:
+        # Thread-safe isolation paths
+        session_id = uuid.uuid4().hex
+        msg_file = f"/tmp/verify_quote_{session_id}.msg"
+        sig_file = f"/tmp/verify_quote_{session_id}.sig"
+        nonce_file = f"/tmp/expected_nonce_{session_id}.bin"
+
+        try:
+            with open(msg_file, "wb") as f:
+                f.write(base64.b64decode(token["quote_msg"]))
+            with open(sig_file, "wb") as f:
+                f.write(base64.b64decode(token["signature"]))
+            with open(nonce_file, "w") as f:
                 f.write(expected_nonce)
 
             result = subprocess.run([
                 "tpm2_checkquote", "-u", public_key_path, 
-                "-m", "/tmp/verify_quote.msg", "-s", "/tmp/verify_quote.sig",
-                "-q", "/tmp/expected_nonce.bin" 
+                "-m", msg_file, "-s", sig_file,
+                "-q", nonce_file 
             ], capture_output=True, text=True)
 
             is_valid = result.returncode == 0
+            
             if is_valid:
-                self.logger.info(f"TPMEngine: Cryptographic verification passed for IDi: {token.get('IDi', 'Unknown')[:16]}...")
+                # 🚨 THE PCR GATE: Signature is mathematically valid, but is the OS healthy?
+                actual_pcr = token.get("pcr_data", "")
+                if expected_pcr and actual_pcr != expected_pcr:
+                    self.logger.critical(f"TPMEngine: 🚨 PCR HEALTH CHECK FAILED! OS tampering detected for IDi: {hardware_idi[:16]}...", extra={"round": round_num})
+                    is_valid = False
+                else:
+                    self.logger.info(f"TPMEngine: Cryptographic and PCR verification passed for IDi: {hardware_idi[:16]}...", extra={"round": round_num})
             else:
-                self.logger.warning(f"TPMEngine: Verification rejected. Output: {result.stderr.strip()}")
+                self.logger.warning(f"TPMEngine: Verification rejected. Expected Nonce matched Token Nonce? {is_valid}. Output: {result.stderr.strip()}", extra={"round": round_num})
                 
             return is_valid
-            
         except Exception as e:
-            self.logger.error(f"TPMEngine: Exception during verification routine: {str(e)}")
+            self.logger.error(f"TPMEngine: Exception during verification routine: {str(e)}", extra={"round": round_num})
             return False
+        finally:
+            # Clean up isolation files
+            for temp_file in [msg_file, sig_file, nonce_file]:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)

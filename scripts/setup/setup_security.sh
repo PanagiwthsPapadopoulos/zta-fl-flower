@@ -26,7 +26,7 @@ BROKER_IP=${3:-127.0.0.1}
 # Path resolution
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-CERTS_DIR="$PROJECT_ROOT/src/network/certs"
+CERTS_DIR="$PROJECT_ROOT/runtime/certs"
 
 # Configure dedicated security debug logging
 LOG_DIR="$PROJECT_ROOT/logs/system"

@@ -16,7 +16,7 @@ from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.strategy import FedAvg
 
 from src.utils.logger_setup import setup_logger
-from src.utils.data_loader import get_dataset, DATASET_METADATA
+from src.data.data_loader import get_dataset, DATASET_METADATA
 
 
 # --- Factory Functions ---
@@ -156,7 +156,7 @@ def server_fn(context: Context) -> ServerAppComponents:
     
     logger.debug(f"[CONFIG USAGE] GlobalEvaluator | dataset: {run_metadata['dataset']}, dataset_path: {dataset_path}, num_classes: {num_classes}, n_features: {n_features}, random_seed: {run_metadata['random_seed']}")
     
-    from src.federation.evaluator import GlobalEvaluator
+    from src.core.evaluator import GlobalEvaluator
     evaluator = GlobalEvaluator(
         dataset=run_metadata["dataset"],
         dataset_path=dataset_path, 

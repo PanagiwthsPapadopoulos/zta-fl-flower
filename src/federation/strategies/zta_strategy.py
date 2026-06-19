@@ -15,8 +15,8 @@ from flwr.server.strategy import FedAvg
 from flwr.common import parameters_to_ndarrays, ndarrays_to_parameters
 
 from src.models.factory import get_model
-from src.utils.compression import compress_weights, decompress_weights
-from src.federation.aggregation import (
+from src.network.compression import compress_weights, decompress_weights
+from src.federation.strategies.aggregation import (
     federated_averaging,
     shap_weighted_aggregate,
     krum_select,
@@ -69,15 +69,12 @@ class ZTAStrategy(FedAvg):
 
         self.run_metadata = run_metadata or {}
         
-        # --- THE FIX: Restored the missing logging variables ---
         self.experiment_name = self.run_metadata.get("experiment_name", "default_run")
         self.results_dict = {
             "metadata": self.run_metadata,
             "performance": []
         }
-        # -------------------------------------------------------
 
-        # --- Zero-Trust Application Layer Gatekeeping ---
         self.active_nonces = {}
         if self.tier == "fog":
             from src.security.policy.gatekeeper import ZeroTrustGatekeeper
@@ -92,6 +89,9 @@ class ZTAStrategy(FedAvg):
             )
 
     def configure_fit(self, server_round: int, parameters: list, client_manager: Any) -> list:
+        from flwr.common import FitIns
+        import secrets
+
         if self.tier == "cloud":
             self.logger.info(f"{self.log_prefix} Shouting to all FOG clients!", extra={"round": server_round})
         elif self.tier == "fog":
@@ -99,23 +99,29 @@ class ZTAStrategy(FedAvg):
             if bridged_round > 0:
                 self.current_bridged_round = bridged_round
             else:
-                self.logger.error(f"{self.log_prefix} [IPC SERVER] Failed to establish valid round sync with Fog Client.", extra={"round": server_round})
-                raise ConnectionError("Fog Bridge failed to synchronize. See DEBUG logs for details.")
+                self.logger.error(f"{self.log_prefix} [IPC SERVER] Failed to establish valid round sync.", extra={"round": server_round})
+                raise ConnectionError("Fog Bridge failed to synchronize.")
 
-        client_instructions = super().configure_fit(server_round, parameters, client_manager)
+        shared_instructions = super().configure_fit(server_round, parameters, client_manager)
+        new_client_instructions = []
 
         if self.tier == "fog":
-            import secrets
-            for client_proxy, fit_ins in client_instructions:
-                fit_ins.config["server_round"] = self.current_bridged_round
-                fit_ins.config["strategy"] = self.strategy
+            for client_proxy, shared_fit_ins in shared_instructions:
+                client_config = shared_fit_ins.config.copy()
+                client_config["server_round"] = self.current_bridged_round
+                client_config["strategy"] = self.strategy
 
                 if self.strategy in ["zta", "ztafl"]:
                     nonce = secrets.token_hex(16)
-                    fit_ins.config["nonce"] = nonce
+                    client_config["nonce"] = nonce
                     self.active_nonces[client_proxy.cid] = nonce
-
-        return client_instructions
+                
+                isolated_fit_ins = FitIns(parameters=shared_fit_ins.parameters, config=client_config)
+                new_client_instructions.append((client_proxy, isolated_fit_ins))
+                
+            return new_client_instructions
+            
+        return shared_instructions
 
     def aggregate_fit(self, server_round: int, results: list, failures: list) -> Tuple[Optional[list], dict]:
         if not results:
@@ -132,17 +138,25 @@ class ZTAStrategy(FedAvg):
         round_display = self.current_bridged_round if self.tier == 'fog' else server_round
         self.logger.info(f"{self.log_prefix} 🧮 Executing {self.strategy.upper()} PyTorch aggregation...", extra={"round": round_display})
 
-        local_models, sizes, trust_weights = self._extract_models_from_results(trusted_results)
+        # 🚨 FIX: Properly extracting the hardware IDs alongside names
+        local_models, sizes, trust_weights, tpm_ids, display_names = self._extract_models_from_results(trusted_results)
 
         try:
-            aggregated_model = self._apply_aggregation_strategy(local_models, sizes, trust_weights)
+            aggregated_model, saboteurs = self._apply_aggregation_strategy(local_models, sizes, trust_weights, tpm_ids, display_names)
+            
+            if saboteurs and self.tier == "fog" and hasattr(self, 'gatekeeper') and self.gatekeeper.trust_db:
+                # 🚨 FIX: Correctly unpack the tuple and supply the round_num to prevent TypeError!
+                for tpm_id, display_identity in saboteurs:
+                    self.logger.error(f"{self.log_prefix} ☠️ SHAP SABOTAGE DETECTED: {display_identity} submitted statistically toxic weights. Retroactively slashing TrustDB score!", extra={"round": round_display})
+                    self.gatekeeper.trust_db.process_attestation(node_id=tpm_id, display_name=display_identity, is_valid=False, round_num=round_display)
+
             self._evaluate_rollback_sanity_check(aggregated_model, round_display)
 
             self.global_model.load_state_dict(aggregated_model.state_dict())
             raw_ndarrays = [val.cpu().numpy() for _, val in aggregated_model.state_dict().items()]
 
             quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
-            self.logger.debug(f"[CONFIG USAGE] compress_weights | quantization_bits: {quantization_bits}")
+            self.logger.debug(f"[CONFIG USAGE] compress_weights | quantization_bits: {quantization_bits}", extra={"round": round_display})
             compressed_ndarrays = compress_weights(raw_ndarrays, quantization_bits)
 
             aggregated_parameters = ndarrays_to_parameters(compressed_ndarrays)
@@ -157,8 +171,7 @@ class ZTAStrategy(FedAvg):
             aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, trusted_results, failures)
 
         self._relay_ipc_fog_bridge(aggregated_parameters)
-
-        self.logger.info(f"{self.log_prefix} ✅ Aggregation successfully finished! Handing off to Evaluator.")
+        self.logger.info(f"{self.log_prefix} ✅ Aggregation successfully finished! Handing off to Evaluator.", extra={"round": round_display})
 
         return aggregated_parameters, aggregated_metrics
 
@@ -171,11 +184,15 @@ class ZTAStrategy(FedAvg):
             temp_gatekeeper = ZeroTrustGatekeeper(logger=self.logger, log_prefix=self.log_prefix, run_metadata=self.run_metadata)
             return temp_gatekeeper.filter_node_updates(self.tier, self.strategy, round_display, results, self.active_nonces)
 
-    def _extract_models_from_results(self, trusted_results: list) -> Tuple[List[torch.nn.Module], List[int], List[float]]:
-        local_models, sizes, trust_weights = [], [], []
+    def _extract_models_from_results(self, trusted_results: list) -> Tuple[List[torch.nn.Module], List[int], List[float], List[str], List[str]]:
+        local_models, sizes, trust_weights, tpm_ids, display_names = [], [], [], [], []
         quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
 
         for client_proxy, fit_res in trusted_results:
+            # 🚨 FIX: Extract hardware ID specifically for the saboteur list
+            tpm_id = fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}")
+            display_identity = fit_res.metrics.get("display_identity", f"{tpm_id} (Unknown)")
+            
             model = get_model(self.model_architecture, self.n_features, self.num_classes)
             raw_params = parameters_to_ndarrays(fit_res.parameters)
             decompressed_params = decompress_weights(raw_params, quantization_bits)
@@ -186,39 +203,41 @@ class ZTAStrategy(FedAvg):
             local_models.append(model)
             sizes.append(fit_res.num_examples)
             trust_weights.append(float(fit_res.metrics.get("total_regional_trust", 1.0)))
+            tpm_ids.append(tpm_id)
+            display_names.append(display_identity)
 
-        return local_models, sizes, trust_weights
+        return local_models, sizes, trust_weights, tpm_ids, display_names
 
-    def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float]) -> torch.nn.Module:
+    def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float], tpm_ids: List[str], display_names: List[str]) -> Tuple[torch.nn.Module, List[Tuple[str, str]]]:
+        saboteurs = []
         if self.strategy in ["zta", "ztafl"] and self.tier == "fog":
             X_val, y_val = self.val_data
-            agg_model, regional_trust = shap_weighted_aggregate(
+            agg_model, regional_trust, passed_flags = shap_weighted_aggregate(
                 local_models=local_models, ref_model=self.global_model,
                 X_val=X_val, y_val=y_val, sizes=sizes, n_classes=self.num_classes, n_explain=self.shap_explain_count
             )
             self.current_regional_trust = regional_trust
-            return agg_model
+            saboteurs = [(tpm_ids[i], display_names[i]) for i, passed in enumerate(passed_flags) if not passed]
+            return agg_model, saboteurs
+            
         elif self.strategy in ["zta", "ztafl"] and self.tier == "cloud":
             total_trust = sum(trust_weights)
             weights = [w / total_trust for w in trust_weights] if total_trust > 0 else None
-            return federated_averaging(local_models, weights=weights)
+            return federated_averaging(local_models, weights=weights), []
         elif self.strategy in ["fedavg", "fedprox"]:
             total_samples = sum(sizes)
             weights = [s / total_samples for s in sizes] if total_samples > 0 else None
-            return federated_averaging(local_models, weights=weights)
+            return federated_averaging(local_models, weights=weights), []
         elif self.strategy == "krum":
             default_f = max(1, int(len(local_models) * 0.3))
             krum_f = int(self.run_metadata.get("krum_f", default_f))
-            self.logger.debug(f"[CONFIG USAGE] krum_select | krum_f: {krum_f}")
-            return krum_select(local_models, f=krum_f)
+            return krum_select(local_models, f=krum_f), []
         elif self.strategy == "trimmed_mean":
             trimmed_mean_beta = float(self.run_metadata.get("trimmed_mean_beta", 0.1))
-            self.logger.debug(f"[CONFIG USAGE] trimmed_mean_aggregate | trimmed_mean_beta: {trimmed_mean_beta}")
-            return trimmed_mean_aggregate(local_models, beta=trimmed_mean_beta)
+            return trimmed_mean_aggregate(local_models, beta=trimmed_mean_beta), []
         elif self.strategy == "flame":
             flame_target_frac = float(self.run_metadata.get("flame_target_frac", 0.5))
-            self.logger.debug(f"[CONFIG USAGE] flame_aggregate | flame_target_frac: {flame_target_frac}")
-            return flame_aggregate(local_models, self.global_model, target_frac=flame_target_frac)
+            return flame_aggregate(local_models, self.global_model, target_frac=flame_target_frac), []
         elif self.strategy == "fltrust":
             server_model = get_model(self.model_architecture, self.n_features, self.num_classes)
             server_model.load_state_dict(self.global_model.state_dict())
@@ -226,7 +245,6 @@ class ZTAStrategy(FedAvg):
                 X_val, y_val = self.val_data
                 learning_rate = float(self.run_metadata.get("learning_rate", 0.001))
                 batch_size = int(self.run_metadata.get("batch_size", 32))
-                self.logger.debug(f"[CONFIG USAGE] fltrust_aggregate | learning_rate: {learning_rate}, batch_size: {batch_size}")
 
                 optimizer = torch.optim.Adam(server_model.parameters(), lr=learning_rate)
                 criterion = torch.nn.CrossEntropyLoss()
@@ -243,7 +261,7 @@ class ZTAStrategy(FedAvg):
                     loss.backward()
                     optimizer.step()
 
-            return fltrust_aggregate(local_models, server_model, self.global_model)
+            return fltrust_aggregate(local_models, server_model, self.global_model), []
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
@@ -264,11 +282,7 @@ class ZTAStrategy(FedAvg):
                 return
             
             rollback_fraction = float(self.run_metadata.get("rollback_threshold", 0.80))
-            self.logger.info(f"[CONFIG USAGE] _evaluate_rollback_sanity_check | rollback_threshold: {rollback_fraction}")
-
             dynamic_threshold = self.previous_val_acc * rollback_fraction
-
-            self.logger.debug(f"[CONFIG USAGE] evaluate_rollback_sanity_check | prev_acc: {self.previous_val_acc}, dynamic_threshold: {dynamic_threshold:.4f}")
 
             if val_acc < dynamic_threshold and self.cached_global_state is not None:
                 self.logger.warning(f"{self.log_prefix} ⚠️ CRITICAL: Accuracy ({val_acc:.4f}) dropped below dynamic threshold ({dynamic_threshold:.4f}). Rolling back to previous round weights!", extra={"round": round_display})
@@ -287,13 +301,13 @@ class ZTAStrategy(FedAvg):
 
     def evaluate(self, server_round: int, parameters: list) -> Optional[Tuple[float, dict]]:
         if self.tier == "fog":
-            self.logger.info(f"{self.log_prefix} Bypassing global evaluation on Fog tier to save resources.")
+            self.logger.info(f"{self.log_prefix} Bypassing global evaluation on Fog tier to save resources.", extra={"round": server_round})
             return None
 
         eval_res = super().evaluate(server_round, parameters)
 
         if eval_res is None:
-            self.logger.warning(f"{self.log_prefix} Evaluation failed or did not run!")
+            self.logger.warning(f"{self.log_prefix} Evaluation failed or did not run!", extra={"round": server_round})
             return None
 
         loss, metrics = eval_res

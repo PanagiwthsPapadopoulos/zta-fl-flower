@@ -11,7 +11,7 @@ if '/app' not in sys.path:
     sys.path.insert(0, '/app')
 
 from src.utils.config_loader import load_yaml_configs
-from src.security.threat_profiler import assign_edge_roles
+from security.threat_engine.threat_profiler import assign_edge_roles
 
 # =====================================================================
 # Logger Configuration

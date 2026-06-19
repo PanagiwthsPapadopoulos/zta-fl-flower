@@ -23,7 +23,7 @@ def load_yaml_configs() -> dict:
         print(f"⚠️ ERROR: Configuration directory not found at {config_dir}")
         return master_config
 
-    files = ["network.yaml", "training.yaml", "security.yaml"]
+    files = ["network.yaml", "training.yaml", "security.yaml", "threat.yaml"]
     
     for file in files:
         path = os.path.join(config_dir, file)
@@ -38,9 +38,10 @@ def load_yaml_configs() -> dict:
 
 def get_merged_config(flower_run_config: dict) -> dict:
     """
-    Merges the ML parameters from YAML with the native Flower configuration.
-    Flower TOML variables will override YAML variables if there is a conflict.
+    Merges the native Flower configuration with our YAML Single Source of Truth (SSOT).
+    YAML configurations will explicitly OVERRIDE Flower TOML variables to prevent split-brain logic.
     """
     app_config = load_yaml_configs()
-    # Merge dictionaries (Python 3.9+)
-    return {**app_config, **flower_run_config}
+    
+    # YAML (app_config) has absolute authority over TOML
+    return {**flower_run_config, **app_config}
