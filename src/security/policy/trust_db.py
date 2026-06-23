@@ -44,8 +44,11 @@ class TrustDatabase:
         else:
             if state["is_quarantined"]:
                 self._process_recovery(node_id, display_name, state, round_num)
-            else:
-                self._apply_reward(node_id, display_name, state, round_num)
+            
+    def apply_behavioral_reward(self, node_id: str, display_name: str, round_num: int) -> None:
+        """Public endpoint to grant a trust reward based on behavioral analysis (e.g., SHAP stability)."""
+        if node_id in self._db and not self._db[node_id]["is_quarantined"]:
+            self._apply_reward(node_id, display_name, self._db[node_id], round_num)
 
     def _apply_penalty(self, node_id: str, display_name: str, state: NodeState, round_num: int) -> None:
         """Applies a multiplicative penalty to a node's score following a failed security attestation."""
@@ -59,7 +62,7 @@ class TrustDatabase:
             self.logger.error(f"TrustDB: Agent {display_name} fell below {self.MIN_THRESHOLD} threshold. QUARANTINE ENGAGED.", extra={"round": round_num})
 
     def _apply_reward(self, node_id: str, display_name: str, state: NodeState, round_num: int) -> None:
-        """Increments a node's trust score following a successfully verified security attestation."""
+        """Increments a node's trust score following a successfully verified behavioral security evaluation."""
         old_score = state["score"]
         state["score"] = min(1.0, state["score"] + self.REWARD_STEP)
         self.logger.debug(f"TrustDB: Agent {display_name} rewarded. Score increased: {old_score:.3f} -> {state['score']:.3f}", extra={"round": round_num})

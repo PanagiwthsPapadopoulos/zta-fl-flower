@@ -148,12 +148,16 @@ class ZTAStrategy(FedAvg):
         local_models, sizes, trust_weights, tpm_ids, display_names = self._extract_models_from_results(trusted_results)
 
         try:
-            aggregated_model, saboteurs = self._apply_aggregation_strategy(local_models, sizes, trust_weights, tpm_ids, display_names)
+            aggregated_model, saboteurs, rewarded_nodes = self._apply_aggregation_strategy(local_models, sizes, trust_weights, tpm_ids, display_names)
             
-            if saboteurs and self.tier == "fog" and hasattr(self, 'gatekeeper') and self.gatekeeper.trust_db:
+            if self.tier == "fog" and hasattr(self, 'gatekeeper') and self.gatekeeper.trust_db:
                 for tpm_id, display_identity in saboteurs:
                     self.logger.error(f"{self.log_prefix} ☠️ SHAP SABOTAGE DETECTED: {display_identity} submitted statistically toxic weights. Retroactively slashing TrustDB score!", extra={"round": round_display})
                     self.gatekeeper.trust_db.process_attestation(node_id=tpm_id, display_name=display_identity, is_valid=False, round_num=round_display)
+                    
+                for tpm_id, display_identity in rewarded_nodes:
+                    self.logger.info(f"{self.log_prefix} 🌟 SHAP EXCELLENCE: {display_identity} strictly exceeded median stability. Granting behavioral trust reward!", extra={"round": round_display})
+                    self.gatekeeper.trust_db.apply_behavioral_reward(node_id=tpm_id, display_name=display_identity, round_num=round_display)
 
             self._evaluate_rollback_sanity_check(aggregated_model, round_display)
 
@@ -214,37 +218,39 @@ class ZTAStrategy(FedAvg):
 
         return local_models, sizes, trust_weights, tpm_ids, display_names
 
-    def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float], tpm_ids: List[str], display_names: List[str]) -> Tuple[torch.nn.Module, List[Tuple[str, str]]]:
+    def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float], tpm_ids: List[str], display_names: List[str]) -> Tuple[torch.nn.Module, List[Tuple[str, str]], List[Tuple[str, str]]]:
         """Applies the specified aggregation strategy to the pool of trusted local models."""
         saboteurs = []
+        rewarded_nodes = []
         if self.strategy in ["zta", "ztafl"] and self.tier == "fog":
             X_val, y_val = self.val_data
-            agg_model, regional_trust, passed_flags = shap_weighted_aggregate(
+            agg_model, regional_trust, passed_flags, reward_flags = shap_weighted_aggregate(
                 local_models=local_models, ref_model=self.global_model,
                 X_val=X_val, y_val=y_val, sizes=sizes, n_classes=self.num_classes, n_explain=self.shap_explain_count
             )
             self.current_regional_trust = regional_trust
             saboteurs = [(tpm_ids[i], display_names[i]) for i, passed in enumerate(passed_flags) if not passed]
-            return agg_model, saboteurs
+            rewarded_nodes = [(tpm_ids[i], display_names[i]) for i, rewarded in enumerate(reward_flags) if rewarded]
+            return agg_model, saboteurs, rewarded_nodes
             
         elif self.strategy in ["zta", "ztafl"] and self.tier == "cloud":
             total_trust = sum(trust_weights)
             weights = [w / total_trust for w in trust_weights] if total_trust > 0 else None
-            return federated_averaging(local_models, weights=weights), []
+            return federated_averaging(local_models, weights=weights), [], []
         elif self.strategy in ["fedavg", "fedprox"]:
             total_samples = sum(sizes)
             weights = [s / total_samples for s in sizes] if total_samples > 0 else None
-            return federated_averaging(local_models, weights=weights), []
+            return federated_averaging(local_models, weights=weights), [], []
         elif self.strategy == "krum":
             default_f = max(1, int(len(local_models) * 0.3))
             krum_f = int(self.run_metadata.get("krum_f", default_f))
-            return krum_select(local_models, f=krum_f), []
+            return krum_select(local_models, f=krum_f), [], []
         elif self.strategy == "trimmed_mean":
             trimmed_mean_beta = float(self.run_metadata.get("trimmed_mean_beta", 0.1))
-            return trimmed_mean_aggregate(local_models, beta=trimmed_mean_beta), []
+            return trimmed_mean_aggregate(local_models, beta=trimmed_mean_beta), [], []
         elif self.strategy == "flame":
             flame_target_frac = float(self.run_metadata.get("flame_target_frac", 0.5))
-            return flame_aggregate(local_models, self.global_model, target_frac=flame_target_frac), []
+            return flame_aggregate(local_models, self.global_model, target_frac=flame_target_frac), [], []
         elif self.strategy == "fltrust":
             server_model = get_model(self.model_architecture, self.n_features, self.num_classes)
             server_model.load_state_dict(self.global_model.state_dict())
@@ -268,7 +274,7 @@ class ZTAStrategy(FedAvg):
                     loss.backward()
                     optimizer.step()
 
-            return fltrust_aggregate(local_models, server_model, self.global_model), []
+            return fltrust_aggregate(local_models, server_model, self.global_model), [], []
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
 

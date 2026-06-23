@@ -65,6 +65,7 @@ def _build_run_metadata(run_config: dict) -> dict:
         "clip_min": float(run_config.get("clip_min", 0.0)),
         "clip_max": float(run_config.get("clip_max", 1.0)),
         "simulate_global_leakage": bool(run_config.get("simulate_global_leakage", False)),
+        "tpm_freshness_window": int(run_config.get("tpm_freshness_window", 300)),
     }
 
 

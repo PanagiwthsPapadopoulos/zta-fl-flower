@@ -99,12 +99,15 @@ class ZeroTrustGatekeeper:
                 return False, tpm_id, untrusted_log_prefix
             
             pubkey_path = os.path.join(folder_path, "ak.pub")
+
+            max_age = int(self.run_metadata.get("tpm_freshness_window", 300))
             
             authenticated = self.tpm_engine.verify_attestation_token(
                 token=token, 
                 expected_nonce=active_nonces.get(client_proxy.cid, ""), 
                 public_key_path=pubkey_path, 
-                expected_pcr=expected_pcr
+                expected_pcr=expected_pcr,
+                max_age_seconds=max_age
             )
             
             display_identity = f"{tpm_id} ({untrusted_log_prefix})"

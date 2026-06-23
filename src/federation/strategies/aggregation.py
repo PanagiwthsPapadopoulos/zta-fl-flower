@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import math
 import statistics
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -253,9 +253,9 @@ def shap_weighted_aggregate(
     sizes: List[int],
     n_classes: int = 15,
     n_explain: int = 10,
-) -> Tuple[nn.Module, float, List[bool]]: 
+) -> Tuple[nn.Module, float, List[bool], List[bool]]: 
     """
-Runs parallel SHAP stability checks to weight and aggregate updates based on structural trust.
+    Runs parallel SHAP stability checks to weight and aggregate updates based on structural trust.
     Returns the aggregated model AND the total regional trust weight for Cloud use.
     Calculates attribution shifts between the proposed updates and the global baseline.
     Models that exceed the Median Absolute Deviation (MAD) tolerance are hard-filtered.
@@ -281,8 +281,9 @@ Runs parallel SHAP stability checks to weight and aggregate updates based on str
         
     Returns
     -------
-    Tuple[nn.Module, float]
-        The hardened global model alongside its aggregate regional trust metric.    """
+    Tuple[nn.Module, float, List[bool], List[bool]]
+        The hardened global model alongside its aggregate regional trust metric, passed flags, and reward flags.    
+    """
     from src.utils.metrics import compute_shap_stability
 
     stability_scores: list[float] = [0.0] * len(local_models)
@@ -314,13 +315,18 @@ Runs parallel SHAP stability checks to weight and aggregate updates based on str
     filter_threshold = mu_s - (2 * sigma_s)
     surviving_models, surviving_weights = [], []
     passed_flags = []
+    reward_flags = []
 
     for i, local_m in enumerate(local_models):
         if stability_scores[i] < filter_threshold:
-            passed_flags.append(False) 
+            passed_flags.append(False)
+            reward_flags.append(False)
             continue 
             
         passed_flags.append(True) 
+        # Only reward agents STRICTLY above the median stability
+        reward_flags.append(stability_scores[i] > mu_s)
+
         local_m.eval()
         with torch.no_grad():
             preds = local_m(X_val).argmax(dim=-1)
@@ -333,12 +339,12 @@ Runs parallel SHAP stability checks to weight and aggregate updates based on str
     total_regional_trust = sum(surviving_weights)
 
     if not surviving_models:
-        return federated_averaging(local_models, weights=None), 0.0, passed_flags 
+        return federated_averaging(local_models, weights=None), 0.0, passed_flags, reward_flags
 
     normalized_weights = [w / total_regional_trust for w in surviving_weights] if total_regional_trust > 1e-12 else None
     agg_model = federated_averaging(surviving_models, weights=normalized_weights)
     
-    return agg_model, total_regional_trust, passed_flags 
+    return agg_model, total_regional_trust, passed_flags, reward_flags
 
 
 

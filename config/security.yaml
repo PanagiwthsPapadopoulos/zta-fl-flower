@@ -2,6 +2,7 @@
 simulate_global_leakage: true           # true = The Paper's Method. false = Strict Real-World Security
 shap_aware_base_attack: "label_flip"    # Base attack for shap-aware adversaries
 rollback_threshold: 0.00                # Accuracy threshold. If global accuracy drops below this, weights revert to previous round
+tpm_freshness_window: 120               # Expiration Duration for timestamp on TPM emulator in seconds
 
 # Threat Model
 # Values represent the proportion of the total edge network assigned to a specific attack.

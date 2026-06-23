@@ -4,6 +4,7 @@ import base64
 import logging
 import re
 import uuid
+import time
 
 class TPMEngine:
     """A hardware abstraction layer for TPM 2.0 cryptographic provisioning and zero-trust attestation quote generation."""
@@ -154,7 +155,8 @@ class TPMEngine:
                 "IDi": hardware_idi,              
                 "quote_msg": msg_b64,             
                 "signature": sig_b64,
-                "pcr_data": pcr_b64
+                "pcr_data": pcr_b64,
+                "timestamp": time.time(),
             }
         except Exception as e:
             self.logger.error(f"TPMEngine: Execution error during token generation: {str(e)}", extra={"round": round_num})
@@ -164,17 +166,21 @@ class TPMEngine:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
 
-    def verify_attestation_token(self, token: dict, expected_nonce: str, public_key_path: str, round_num: int = 0, expected_pcr: str = None) -> bool:
+    def verify_attestation_token(self, token: dict, expected_nonce: str, public_key_path: str, round_num: int = 0, expected_pcr: str = None, max_age_seconds: int = 300) -> bool:
         """Verifies an incoming attestation token's signature, structure, and PCR health against the expected baseline."""
         if self.insecure_mode or token.get("status") == "insecure_bypass":
             return True
-            
-        if token.get("status") == "simulated_key_theft":
-            self.logger.critical(f"[TPM-VERIFY] ⚠️ SIMULATED KEY THEFT: Bypassing cryptography. The attacker possesses the valid private key!", extra={"round": round_num})
-            return True
-            
+                        
         if token.get("status") != "attested":
             self.logger.warning(f"[TPM-VERIFY] Edge Node sent corrupted/error token: {token}", extra={"round": round_num})
+            return False
+        
+        # Check timestamp
+        token_time = token.get("timestamp", 0)
+        current_time = time.time()
+        
+        if (current_time - token_time) > max_age_seconds:
+            self.logger.critical(f"[TPM-VERIFY] 🚨 FRESHNESS CHECK FAILED! Token expired. Age: {current_time - token_time:.1f}s > {max_age_seconds}s", extra={"round": round_num})
             return False
 
         hardware_idi = token.get('IDi', 'Unknown')
