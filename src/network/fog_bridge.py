@@ -8,7 +8,9 @@ from typing import Tuple, List, Dict, Any, Optional
 from src.network.ipc import send_msg, recv_msg
 
 class FogBridgeClient:
+    """A network client component for managing IPC socket flows and coordinating training rounds with the regional hub."""
     def __init__(self, logger: logging.Logger, log_prefix: str, ipc_port: int, socket_timeout: float = 600.0):
+        """Initializes the Fog Bridge Client for IPC communication over the designated socket."""
         self.logger = logger
         self.log_prefix = log_prefix
         self.ipc_port = ipc_port
@@ -16,6 +18,7 @@ class FogBridgeClient:
         self.target_host = os.getenv("FOG_SERVER_HOST", "127.0.0.1")
 
     def _connect_with_retries(self, current_round: int) -> Optional[socket.socket]:
+        """Attempts to establish a socket connection with the Fog Server, actively retrying on failure."""
         self.logger.debug(f"{self.log_prefix} [IPC CLIENT] Attempting to connect to Fog Server at {self.target_host}:{self.ipc_port}...", extra={"round": current_round})
         while True:
             try:
@@ -33,6 +36,7 @@ class FogBridgeClient:
                 return None
 
     def execute_round(self, current_round: int) -> Tuple[List[np.ndarray], int, Dict[str, Any]]:
+        """Executes a single federated learning round by dispatching a START signal and awaiting aggregated weights."""
         try:
             sock = self._connect_with_retries(current_round)
             if not sock:
@@ -61,18 +65,21 @@ class FogBridgeClient:
 
 
 class FogBridgeServer:
+    """An IPC socket listener for intercepting, synchronizing, and distributing parameters across local connections."""
     def __init__(self, logger: logging.Logger, log_prefix: str, ipc_port: int, socket_timeout: float = 600.0):
+        """Initializes the Fog Bridge Server to listen for and manage incoming local IPC connections."""
         self.logger = logger
         self.log_prefix = log_prefix
         self.ipc_port = ipc_port
         self.socket_timeout = socket_timeout
         self.ipc_server_sock = None
         self.active_conn = None
-        self.current_round = 0  # 🚨 Added state to track the round
+        self.current_round = 0 
         
         self._bind_socket()
 
     def _bind_socket(self):
+        """Binds the server socket to the designated IPC port and initiates the listening state."""
         try:
             self.logger.debug(f"{self.log_prefix} [IPC SERVER] Booting IPC listener on 0.0.0.0:{self.ipc_port}...", extra={"round": 0})
             self.ipc_server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -86,12 +93,13 @@ class FogBridgeServer:
             self.ipc_server_sock = None
 
     def wait_for_start(self) -> int:
+        """Blocks execution to await an incoming START payload from a connected Fog Bridge Client."""
         if not self.ipc_server_sock:
             self.logger.debug(f"{self.log_prefix} [IPC SERVER] Socket not initialized. Bypassing wait_for_start.", extra={"round": self.current_round})
             return 0
             
         try:
-            # We use current_round here so that while it blocks, it prints the round it is currently in/finishing
+            # Use current_round here so that while it blocks, it prints the round it is currently in/finishing
             self.logger.debug(f"{self.log_prefix} [IPC SERVER] Blocking for incoming connection from local Fog Client...", extra={"round": self.current_round})
             self.active_conn, addr = self.ipc_server_sock.accept()
             self.active_conn.settimeout(self.socket_timeout)
@@ -100,7 +108,7 @@ class FogBridgeServer:
             msg = recv_msg(self.active_conn)
             
             if isinstance(msg, dict) and msg.get("cmd") == "START":
-                self.current_round = msg.get("round", 0) # 🚨 Update state!
+                self.current_round = msg.get("round", 0)
                 self.logger.info(f"{self.log_prefix} [IPC SERVER] START received for round {self.current_round}. Shouting to EDGE clients!", extra={"round": self.current_round})
                 return self.current_round
             else:
@@ -112,6 +120,7 @@ class FogBridgeServer:
             return 0
 
     def relay_weights(self, ndarrays: List[np.ndarray]):
+        """Relays the aggregated global model weights back to the actively connected Fog Bridge Client."""
         if not self.active_conn:
             self.logger.debug(f"{self.log_prefix} [IPC SERVER] No active connection available to relay weights. Skipping.", extra={"round": self.current_round})
             return

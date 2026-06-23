@@ -1,11 +1,6 @@
 import os
 from datetime import datetime
 
-# Limits thread usage to prevent OpenMP CPU deadlocks during heavy Server evaluation
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-
 import torch
 import numpy as np
 torch.set_num_threads(1)
@@ -18,8 +13,6 @@ from flwr.server.strategy import FedAvg
 from src.utils.logger_setup import setup_logger
 from src.data.data_loader import get_dataset, DATASET_METADATA
 
-
-# --- Factory Functions ---
 
 def fit_config(server_round: int) -> dict:
     """Provides dynamic fit instructions on a per-round basis."""
@@ -128,7 +121,7 @@ def server_fn(context: Context) -> ServerAppComponents:
             X_full = dataset_returns[0]
             y_full = dataset_returns[1]
             
-            # If the loader returned 5 items, we are in Secure Mode. The Server MUST scale its evaluation data!
+            # If the loader returned 5 items, the system is in Secure Mode. The Server MUST scale its evaluation data!
             if len(dataset_returns) > 3:
                 server_scaler = dataset_returns[3]
                 server_pca = dataset_returns[4]

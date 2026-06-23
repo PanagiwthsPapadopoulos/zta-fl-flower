@@ -4,20 +4,9 @@
 # =========================================================================
 
 admin_actions:
-  # Round 1: Dynamically scan and register ALL edge nodes in the volume
-  - action_type: "init_pcr"
-    activate_on_round: 1
-
-  # Round 2: Targeted legitimate firmware patch
+  # Targeted legitimate firmware patch
   - fog_num: 1
     target_edge: 1
     action_type: "pcr_legit_update"
-    activate_on_round: 2
+    activate_on_round: 1
     enabled: false 
-
-  # Round 2: Simulated rootkit attempt (for testing rejection)
-  - fog_num: 1
-    target_edge: 1
-    action_type: "pcr_fake_update"
-    activate_on_round: 2
-    enabled: false

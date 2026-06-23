@@ -35,6 +35,7 @@ class Client(NumPyClient):
     """
     
     def __init__(self, logger, node_type: str, log_prefix: str, fog_num: int, edge_num: int, model=None, train_loader=None, device="cpu", dataset_metadata=None, train_config=None):
+        """Initializes the Federated Learning Client with explicit node identity, logging prefixes, and local configurations."""
         self.logger = logger
         self.node_type = node_type
         self.log_prefix = log_prefix
@@ -71,6 +72,7 @@ class Client(NumPyClient):
             )
 
     def get_parameters(self, config: dict) -> list:
+        """Extracts and fully compresses the local model parameters for network transmission to the server."""
         if self.node_type == "edge":
             return self.trainer.get_parameters()
             
@@ -79,6 +81,7 @@ class Client(NumPyClient):
         return compress_weights(weights, bits)
 
     def fit(self, parameters: list, config: dict):
+        """Executes the local training round and returns the sequentially updated, optionally corrupted, network parameters."""
         try:
             current_round = config.get("server_round", 0)
             strategy = config.get("strategy", "fedavg")
@@ -100,10 +103,12 @@ class Client(NumPyClient):
             return [], 0, {"status": "crashed"}
 
     def evaluate(self, parameters: list, config: dict):
+        """Bypasses local evaluation to preserve computational resources on constrained edge environments."""
         return 0.0, 1, {"accuracy": 1.0}
 
 
 def _build_fog_client(run_config: dict, node_config: dict):
+    """Constructs the configuration, network IPC, and logging environment specifically for a Fog Client node."""
     raw_fog_val = str(node_config.get("fog_id", "0"))
     fog_num = int(''.join(filter(str.isdigit, raw_fog_val))) if any(c.isdigit() for c in raw_fog_val) else 0
     node_type = "fog_client" 
@@ -119,6 +124,7 @@ def _build_fog_client(run_config: dict, node_config: dict):
     return logger, node_type, log_prefix, fog_num, train_config
 
 def client_fn(context: Context):
+    """Initializes and securely constructs the complete Client instance based on the provided framework context."""
     from src.utils.config_loader import get_merged_config
     run_config = get_merged_config(context.run_config)
     node_config = context.node_config
@@ -222,7 +228,6 @@ def client_fn(context: Context):
             
             if cache_key not in GLOBAL_DATA_CACHE:
                 
-                # 🚨 FIX: Data Loader now universally returns 3 fully scaled parameters regardless of isolation mode!
                 X_full, y_full, n_classes_eval = get_dataset(
                     dataset_name, dataset_path, num_classes, random_seed, 
                     simulate_global_leakage=simulate_leakage, 
@@ -261,7 +266,6 @@ def client_fn(context: Context):
                     trigger_features=tuple(trigger_features), trigger_value=trigger_value, seed=(master_seed + global_index) 
                 )
             
-            # 🚨 FIX: Removed the redundant double-scaling logic entirely! Data is already pre-scaled.
             if not isinstance(X_part, torch.Tensor):
                 X_part = torch.tensor(X_part, dtype=torch.float32)
 

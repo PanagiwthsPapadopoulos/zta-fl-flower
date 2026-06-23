@@ -31,6 +31,7 @@ class GlobalEvaluator:
         tier: str,
         logger: logging.Logger
     ):
+        """Initializes the Global Evaluator responsible for centralized model performance and security integrity assessments."""
         self.dataset = dataset
         self.dataset_path = dataset_path
         self.num_classes = num_classes
@@ -41,7 +42,6 @@ class GlobalEvaluator:
         self.tier = tier
         self.logger = logger
         
-        # Replaces the old global variable with a clean instance cache
         self._data_cache = {}
 
     def evaluate(self, server_round: int, parameters: list, config: dict) -> Tuple[float, dict]:

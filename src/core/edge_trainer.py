@@ -14,6 +14,7 @@ class EdgeTrainer:
     Handles decompression, local epochs, adversarial data splits, and quantization.
     """
     def __init__(self, logger, log_prefix, model, train_loader, device, train_config, dataset_metadata):
+        """Initializes the localized Edge Trainer responsible for executing isolated model optimizations."""
         self.logger = logger
         self.log_prefix = log_prefix
         self.model = model
@@ -72,7 +73,7 @@ class EdgeTrainer:
             **self.dataset_metadata 
         }
 
-        # --- Application-Layer Hardware Root of Trust Attestation Checkpoint ---
+        # Application-Layer Hardware Root of Trust Attestation Checkpoint
         if strategy in ["zta", "ztafl"]:
             from src.security.attestation.tpm_core import TPMEngine
             tpm_engine = TPMEngine(logger=self.logger)
@@ -86,6 +87,7 @@ class EdgeTrainer:
         return self.get_parameters(), len(self.train_loader.dataset), metadata
 
     def _apply_static_adversarial_split(self, active_loader: DataLoader, role: str) -> DataLoader:
+        """Splits the active dataset and iteratively generates adversarial injection examples based on the assigned threat role."""
         adv_ratio = float(self.train_config.get("adv_ratio", 0.3))
         if adv_ratio <= 0.0:
             return active_loader
@@ -136,6 +138,7 @@ class EdgeTrainer:
         return DataLoader(TensorDataset(X_combined, y_combined), batch_size=active_loader.batch_size, shuffle=True)
 
     def _train_standard_or_poison(self, role: str, lr: float, current_round: int, active_loader: DataLoader, strategy: str, global_model: torch.nn.Module):
+        """Executes the specific PyTorch optimization loop variant strictly dictated by the node's assigned profile role."""
         clip_norm = float(self.train_config.get("clip_norm", 1.0))
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 

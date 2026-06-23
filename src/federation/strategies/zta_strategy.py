@@ -79,16 +79,17 @@ class ZTAStrategy(FedAvg):
         if self.tier == "fog":
             from src.security.policy.gatekeeper import ZeroTrustGatekeeper
             self.gatekeeper = ZeroTrustGatekeeper(logger=self.logger, log_prefix=self.log_prefix, run_metadata=self.run_metadata)
+            
+            from src.security.policy.admin_console import AdminConsole
+            self.admin_console = AdminConsole(self.gatekeeper, self.logger)
 
             from src.network.fog_bridge import FogBridgeServer
             self.fog_bridge = FogBridgeServer(
-                logger=self.logger,
-                log_prefix=self.log_prefix,
-                ipc_port=self.ipc_port,
-                socket_timeout=self.socket_timeout
+                logger=self.logger, log_prefix=self.log_prefix, ipc_port=self.ipc_port, socket_timeout=self.socket_timeout
             )
 
     def configure_fit(self, server_round: int, parameters: list, client_manager: Any) -> list:
+        """Configures the next round of training by providing structured instructions to clients."""
         from flwr.common import FitIns
         import secrets
 
@@ -101,6 +102,11 @@ class ZTAStrategy(FedAvg):
             else:
                 self.logger.error(f"{self.log_prefix} [IPC SERVER] Failed to establish valid round sync.", extra={"round": server_round})
                 raise ConnectionError("Fog Bridge failed to synchronize.")
+
+        round_display = self.current_bridged_round if self.tier == 'fog' else server_round
+
+        if self.tier == "fog":
+            self.admin_console.execute_scheduled_updates(round_display, self.fog_num)
 
         shared_instructions = super().configure_fit(server_round, parameters, client_manager)
         new_client_instructions = []
@@ -124,10 +130,12 @@ class ZTAStrategy(FedAvg):
         return shared_instructions
 
     def aggregate_fit(self, server_round: int, results: list, failures: list) -> Tuple[Optional[list], dict]:
+        """Aggregates training results from clients using the configured mathematical approach."""
         if not results:
             self._relay_ipc_fog_bridge(None)
             return None, {}
 
+        round_display = self.current_bridged_round if self.tier == 'fog' else server_round
         trusted_results = self._filter_results(server_round, results)
 
         if not trusted_results:
@@ -135,17 +143,14 @@ class ZTAStrategy(FedAvg):
             self._relay_ipc_fog_bridge(None)
             return None, {}
 
-        round_display = self.current_bridged_round if self.tier == 'fog' else server_round
         self.logger.info(f"{self.log_prefix} 🧮 Executing {self.strategy.upper()} PyTorch aggregation...", extra={"round": round_display})
 
-        # 🚨 FIX: Properly extracting the hardware IDs alongside names
         local_models, sizes, trust_weights, tpm_ids, display_names = self._extract_models_from_results(trusted_results)
 
         try:
             aggregated_model, saboteurs = self._apply_aggregation_strategy(local_models, sizes, trust_weights, tpm_ids, display_names)
             
             if saboteurs and self.tier == "fog" and hasattr(self, 'gatekeeper') and self.gatekeeper.trust_db:
-                # 🚨 FIX: Correctly unpack the tuple and supply the round_num to prevent TypeError!
                 for tpm_id, display_identity in saboteurs:
                     self.logger.error(f"{self.log_prefix} ☠️ SHAP SABOTAGE DETECTED: {display_identity} submitted statistically toxic weights. Retroactively slashing TrustDB score!", extra={"round": round_display})
                     self.gatekeeper.trust_db.process_attestation(node_id=tpm_id, display_name=display_identity, is_valid=False, round_num=round_display)
@@ -176,6 +181,7 @@ class ZTAStrategy(FedAvg):
         return aggregated_parameters, aggregated_metrics
 
     def _filter_results(self, server_round: int, results: list) -> list:
+        """Filters incoming client updates based on zero-trust attestations and gatekeeper policies."""
         round_display = self.current_bridged_round if self.tier == "fog" else server_round
         if self.tier == "fog":
             return self.gatekeeper.filter_node_updates(self.tier, self.strategy, round_display, results, self.active_nonces)
@@ -185,11 +191,11 @@ class ZTAStrategy(FedAvg):
             return temp_gatekeeper.filter_node_updates(self.tier, self.strategy, round_display, results, self.active_nonces)
 
     def _extract_models_from_results(self, trusted_results: list) -> Tuple[List[torch.nn.Module], List[int], List[float], List[str], List[str]]:
+        """Extracts decompressed local models, dataset sizes, and trust metrics from verified client results."""
         local_models, sizes, trust_weights, tpm_ids, display_names = [], [], [], [], []
         quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
 
         for client_proxy, fit_res in trusted_results:
-            # 🚨 FIX: Extract hardware ID specifically for the saboteur list
             tpm_id = fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}")
             display_identity = fit_res.metrics.get("display_identity", f"{tpm_id} (Unknown)")
             
@@ -209,6 +215,7 @@ class ZTAStrategy(FedAvg):
         return local_models, sizes, trust_weights, tpm_ids, display_names
 
     def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float], tpm_ids: List[str], display_names: List[str]) -> Tuple[torch.nn.Module, List[Tuple[str, str]]]:
+        """Applies the specified aggregation strategy to the pool of trusted local models."""
         saboteurs = []
         if self.strategy in ["zta", "ztafl"] and self.tier == "fog":
             X_val, y_val = self.val_data
@@ -266,6 +273,7 @@ class ZTAStrategy(FedAvg):
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
     def _evaluate_rollback_sanity_check(self, aggregated_model: torch.nn.Module, round_display: int) -> None:
+        """Evaluates the aggregated model to ensure accuracy hasn't degraded beyond safe thresholds."""
         if self.tier == "fog" and self.val_data is not None:
             aggregated_model.eval()
             with torch.no_grad():
@@ -295,11 +303,13 @@ class ZTAStrategy(FedAvg):
             self.cached_global_state = copy.deepcopy(aggregated_model.state_dict())
 
     def _relay_ipc_fog_bridge(self, aggregated_parameters: Optional[list]) -> None:
+        """Relays the newly aggregated global parameters back to the Fog Bridge client via IPC."""
         if self.tier == "fog":
             ndarrays_to_send = parameters_to_ndarrays(aggregated_parameters) if aggregated_parameters is not None else []
             self.fog_bridge.relay_weights(ndarrays_to_send)
 
     def evaluate(self, server_round: int, parameters: list) -> Optional[Tuple[float, dict]]:
+        """Evaluates the aggregated global model against the centralized evaluation dataset."""
         if self.tier == "fog":
             self.logger.info(f"{self.log_prefix} Bypassing global evaluation on Fog tier to save resources.", extra={"round": server_round})
             return None

@@ -2,13 +2,13 @@ import os
 import json
 import logging
 import numpy as np
+import base64
 import torch
 
 class AdversaryManager:
-    """
-    Autonomous threat orchestration engine using integer coordinate mapping.
-    """
+    """An autonomous orchestration controller for mapping and triggering scheduled client-side adversarial attacks."""
     def __init__(self, fog_num: int, edge_num: int, logger: logging.Logger):
+        """Initializes the Adversary Manager and preemptively loads the designated threat profile for the current node."""
         self.fog_num = fog_num
         self.edge_num = edge_num
         self.log_prefix = f"[EDGE {fog_num}_{edge_num}]" 
@@ -19,10 +19,10 @@ class AdversaryManager:
         self.current_round = 0
         self.target_victim = None 
         
-        self.cache_file = f"/tmp/stolen_token_{self.fog_num}_{self.edge_num}.json"
         self._load_threat_profile()
 
     def _load_threat_profile(self):
+        """Loads the configured threat profile parameters and activation schedules from the application configuration."""
         try:
             from src.utils.config_loader import load_yaml_configs
             config = load_yaml_configs()
@@ -37,10 +37,9 @@ class AdversaryManager:
                     self.attack_type = adv.get("attack_type")
                     self.activate_on_round = adv.get("activate_on_round", 1)
                     
-                    if self.attack_type == "identity_theft":
-                        v_fog = adv.get("target_victim_fog", self.fog_num)
-                        v_edge = adv.get("target_victim_edge", 1)
-                        self.target_victim = f"[EDGE {v_fog}_{v_edge}]"
+                    v_fog = adv.get("target_victim_fog", self.fog_num)
+                    v_edge = adv.get("target_victim_edge", 1)
+                    self.target_victim = f"[EDGE {v_fog}_{v_edge}]"
 
                     self.logger.warning(f"🚨 ADVERSARY PROFILE LOADED: {self.attack_type.upper()} scheduled for Round {self.activate_on_round}")
                     break
@@ -48,6 +47,7 @@ class AdversaryManager:
             self.logger.error(f"AdversaryManager failed to load profile: {e}")
 
     def corrupt_data_if_needed(self, trainloader):
+        """Wraps the honest local data loader with a malicious transformation loader if data poisoning is actively scheduled."""
         if self.attack_type == "label_flipping":
             manager = self 
             class LabelFlippingLoader:
@@ -65,12 +65,10 @@ class AdversaryManager:
         return trainloader
 
     def corrupt_payload_if_needed(self, parameters: list, metrics: dict) -> tuple:
+        """Injects malicious modifications into the outgoing model parameters or TPM token payload depending on active attacks."""
         if not self.attack_type:
             return parameters, metrics
 
-        # ---------------------------------------------------------
-        # ATTACK: TPM Replay
-        # ---------------------------------------------------------
         if self.attack_type == "tpm_replay":
             if self.current_round < self.activate_on_round:
                 self.logger.debug(f"{self.log_prefix} Hoarding valid token to disk for future replay attack...")
@@ -84,9 +82,6 @@ class AdversaryManager:
                     with open(self.cache_file, "r") as f:
                         metrics["tpm_token_json"] = f.read()
 
-        # ---------------------------------------------------------
-        # ATTACK: TPM Forgery (Man-in-the-Middle)
-        # ---------------------------------------------------------
         elif self.attack_type == "tpm_forgery" and self.current_round >= self.activate_on_round:
             self.logger.error(f"{self.log_prefix} ☠️ EXECUTING TPM FORGERY: Corrupting RSA signature payload.")
             token_str = metrics.get("tpm_token_json")
@@ -94,46 +89,29 @@ class AdversaryManager:
                 try:
                     token = json.loads(token_str)
                     sig = token.get("signature", "")
-                    # Break the RSA math
                     if len(sig) > 5:
                         token["signature"] = sig[:-5] + "XXXXX"
                     metrics["tpm_token_json"] = json.dumps(token)
-                except Exception as e: pass
+                except Exception: pass
 
-        # ---------------------------------------------------------
-        # 🚨 NEW ATTACK: OS Malware / PCR Alteration
-        # ---------------------------------------------------------
         elif self.attack_type == "pcr_alteration" and self.current_round >= self.activate_on_round:
-            self.logger.error(f"{self.log_prefix} ☠️ EXECUTING PCR ALTERATION: Simulating Rootkit/Malware Infection in OS hashes.")
             token_str = metrics.get("tpm_token_json")
             if token_str:
                 try:
                     token = json.loads(token_str)
-                    pcr = token.get("pcr_data", "")
-                    # Alter the OS state hash. The RSA signature will STILL be valid!
-                    if len(pcr) > 7:
-                        token["pcr_data"] = pcr[:-7] + "MALWARE"
-                    metrics["tpm_token_json"] = json.dumps(token)
-                except Exception as e: pass
+                    
+                    # Direct string injection to perfectly match the Gatekeeper's modified ledger
+                    token["pcr_data"] = "INJECTED PCR DURING TRAINING"
 
-        # ---------------------------------------------------------
-        # ATTACK: Model Poisoning (Software Hijacking)
-        # ---------------------------------------------------------
+                    if self.current_round == self.activate_on_round:
+                        self.logger.info(f"{self.log_prefix} Executing PCR alteration. New PCR value: \"INJECTED PCR DURING TRAINING\". ")
+                        
+                    metrics["tpm_token_json"] = json.dumps(token)
+                except Exception: pass
+
         elif self.attack_type == "model_poisoning" and self.current_round >= self.activate_on_round:
             self.logger.error(f"{self.log_prefix} ☠️ EXECUTING MODEL POISONING: Injecting randomized Gaussian weights.")
             parameters = [np.random.normal(0, 5, size=p.shape).astype(p.dtype) for p in parameters]
 
-        # ---------------------------------------------------------
-        # ATTACK: Identity Theft
-        # ---------------------------------------------------------
-        elif self.attack_type == "identity_theft" and self.current_round >= self.activate_on_round:
-            self.logger.error(f"{self.log_prefix} ☠️ EXECUTING IDENTITY THEFT: Spoofing {self.target_victim}'s keys and injecting poisoned weights.")
-            parameters = [np.random.normal(0, 5, size=p.shape).astype(p.dtype) for p in parameters]
-            token = {
-                "status": "simulated_key_theft",
-                "target_victim": self.target_victim
-            }
-            metrics["tpm_token_json"] = json.dumps(token)
-            metrics["log_prefix"] = self.target_victim
-
+    
         return parameters, metrics

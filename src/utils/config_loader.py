@@ -4,26 +4,25 @@ import yaml
 def load_yaml_configs() -> dict:
     """Loads and merges all YAML configurations into a single dictionary."""
     
-    # 1. Prioritize explicitly passed environment variables
+    # Prioritize explicitly passed environment variables
     config_dir = os.environ.get("CONFIG_PATH")
     
-    # 2. Primary Fallback: The known Docker container path
+    # Primary Fallback: The known Docker container path
     if not config_dir and os.path.exists("/app/config"):
         config_dir = "/app/config"
         
-    # 3. Secondary Fallback: File-relative path (for local Mac/Linux testing outside Docker)
+    # Secondary Fallback: File-relative path (for local Mac/Linux testing outside Docker)
     if not config_dir:
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         config_dir = os.path.join(base_dir, "config")
 
     master_config = {}
     
-    # If we still can't find it, fail gracefully
     if not os.path.exists(config_dir):
         print(f"⚠️ ERROR: Configuration directory not found at {config_dir}")
         return master_config
 
-    files = ["network.yaml", "training.yaml", "security.yaml", "threat.yaml"]
+    files = ["network.yaml", "training.yaml", "security.yaml", "threat.yaml", "admin.yaml"]
     
     for file in files:
         path = os.path.join(config_dir, file)

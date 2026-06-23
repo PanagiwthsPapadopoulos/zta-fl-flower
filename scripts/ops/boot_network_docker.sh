@@ -325,6 +325,8 @@ EOF
       - ./logs:/app/logs
       - ./data:/app/data
       - ./config:/app/config:ro
+      - ./runtime/tpm_state:/app/runtime/tpm_state:rw
+      - ./runtime/gatekeeper:/app/runtime/gatekeeper
 EOF
 
     if [ "$CURRENT_EDGES" -gt 0 ]; then
@@ -379,7 +381,7 @@ EOF
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      - ./runtime/tpm_state/edge_${i}_${j}:/app/runtime  # NVRAM MOUNT
+      - ./runtime/tpm_state/edge_${i}_${j}:/app/runtime/tpm_state/edge_${i}_${j}
       - ./config:/app/config:ro
 EOF
         done
@@ -393,6 +395,21 @@ cd "$PROJECT_ROOT" || exit 1
 docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" up -d
 docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" logs -f > "$LOG_DIR/system/docker_mesh.log" 2>&1 &
 PIDS+=($!)
+
+# =========================================================
+# 4.5 OFFLINE ZERO-TRUST NETWORK PROVISIONING (COLLECTOR)
+# =========================================================
+echo "================================================="
+echo " 🛡️  FACTORY PROVISIONING (COLLECTING STATES)     "
+echo "================================================="
+echo "⏳ Waiting 5 seconds for container TPM boot sequences to complete..."
+sleep 5
+
+# Export the project root so the Python script knows where to look
+export PROJECT_ROOT="$PROJECT_ROOT"
+
+# Execute the decoupled script
+python3 "$PROJECT_ROOT/scripts/setup/collect_ledgers.py"
 
 # =================================================
 #  5. INJECTING GLOBAL CONFIGURATION (~/.flwr)     

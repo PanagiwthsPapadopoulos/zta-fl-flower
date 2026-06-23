@@ -14,12 +14,11 @@ import torch
 
 from imblearn.over_sampling import SMOTE
 
-# Implements a global memory cache to prevent memory exhaustion during server evaluation.
+# Implement a global memory cache to prevent memory exhaustion during server evaluation.
 _MASTER_DATA_CACHE = {}
 
 
-# Defines associative mapping structures conforming textual telemetry states to numerical index targets.
-
+# Define associative mapping structures conforming textual telemetry states to numerical index targets.
 EDGE_IIOT_LABELS = {
     "Normal": 0, "DoS_TCP": 1, "DoS_UDP": 2, "Scanning": 3,
     "MITM_Attack": 4, "Fingerprinting": 5, "Password": 6,
@@ -271,7 +270,6 @@ def get_dataset(
         result = (X_tensor, y_tensor, num_classes)
 
     else:
-        # 🚨 FIX: Pre-scale and Pre-transform the Isolated Data using the training baseline!
         scaler.fit(X_train)
         X_train_scaled = scaler.transform(X_train)
         
@@ -302,7 +300,6 @@ def get_dataset(
         X_tensor = torch.tensor(X_resampled, dtype=torch.float32)
         y_tensor = torch.tensor(y_resampled, dtype=torch.long)
             
-        # 🚨 UNIFIED RETURN: Always strictly return the pre-processed tensors!
         result = (X_tensor, y_tensor, num_classes)
         
     _MASTER_DATA_CACHE[cache_key] = result
