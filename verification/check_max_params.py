@@ -2,7 +2,7 @@ import ast
 import glob
 import os
 
-SRC_DIRS = ["src/federation", "src/models", "src/security", "src/utils", "scripts"]
+SRC_DIRS = ["src/entrypoints", "src/shared", "src/tier_cloud", "src/tier_edge", "src/tier_fog"]
 
 def build_internal_registry(py_files):
     """

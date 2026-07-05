@@ -35,9 +35,9 @@ echo "[DEBUG NGINX] Arguments: FOGS=$1 | EDGES=$2 | IP=$3 | BASE=$4 | DOCKER=$5"
 # Resolve absolute paths for Nginx configuration generation
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-CERTS_DIR="$PROJECT_ROOT/src/network/certs"
+CERTS_DIR="$PROJECT_ROOT/runtime/certs"
 LOG_DIR="$PROJECT_ROOT/logs/system"
-NGINX_CONF="$PROJECT_ROOT/src/network/nginx.conf"
+NGINX_CONF="$PROJECT_ROOT/runtime/nginx.conf"
 
 # =========================================================
 # DYNAMIC PATH & BINDING RESOLUTION

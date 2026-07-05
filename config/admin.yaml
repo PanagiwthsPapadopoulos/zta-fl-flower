@@ -1,0 +1,12 @@
+# =========================================================================
+# OUT-OF-BAND (OOB) MANAGEMENT PLANE
+# Administrative overrides for TPM PCR baselines
+# =========================================================================
+
+admin_actions:
+  # Targeted legitimate firmware patch
+  - fog_num: 1
+    target_edge: 1
+    action_type: "pcr_legit_update"
+    activate_on_round: 1
+    enabled: false 

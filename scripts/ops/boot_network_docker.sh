@@ -30,8 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
 LOG_DIR="$PROJECT_ROOT/logs"
-CERTS_DIR="$PROJECT_ROOT/src/network/certs"
-NGINX_CONF="$PROJECT_ROOT/src/network/nginx.conf"
+CERTS_DIR="$PROJECT_ROOT/runtime/certs"
+NGINX_CONF="$PROJECT_ROOT/runtime/nginx.conf"
 
 # Dynamically determine a safe Compose project name based on the root directory
 PROJECT_DIR_NAME=$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
@@ -60,35 +60,48 @@ fi
 # DYNAMIC TOPOLOGY EXTRACTION
 # =========================================================
 echo "================================================="
-echo " 🔍 READING TOPOLOGY FROM pyproject.toml         "
+echo " 🔍 READING TOPOLOGY FROM network.yaml           "
 echo "================================================="
 CONFIG_VARS=$(python3 - <<EOF
 import re, ast
+
+def get_yaml_val(filepath, key, default):
+    """Safely extracts YAML values using regex to avoid external host OS dependencies."""
+    try:
+        with open(filepath, 'r') as f:
+            content = f.read()
+        # Matches key: value, stripping out inline comments and quotes
+        m = re.search(fr'^{key}:\s*(.+)$', content, re.MULTILINE)
+        if m:
+            return m.group(1).split('#')[0].strip().strip('"').strip("'")
+    except:
+        pass
+    return default
+
+net_conf = '$PROJECT_ROOT/config/network.yaml'
+
 try:
-    with open('$PROJECT_ROOT/pyproject.toml', 'r') as f: content = f.read()
-    def get_val(key, default):
-        m = re.search(fr'{key}\s*=\s*(["0-9\.]+)', content)
-        return m.group(1).replace('"', '') if m else default
+    print(f"CLOUD_SA={get_yaml_val(net_conf, 'cloud_sa_port', '9001')}")
+    print(f"CLOUD_FL={get_yaml_val(net_conf, 'cloud_fl_port', '9002')}")
+    print(f"CLOUD_CTRL={get_yaml_val(net_conf, 'cloud_ctrl_port', '9003')}")
+    print(f"FOG_SA_BASE={get_yaml_val(net_conf, 'fog_sa_base', '9100')}")
+    print(f"FOG_FL_BASE={get_yaml_val(net_conf, 'fog_fl_base', '9200')}")
+    print(f"FOG_CTRL_BASE={get_yaml_val(net_conf, 'fog_ctrl_base', '9300')}")
+    print(f"FOG_CIO_BASE={get_yaml_val(net_conf, 'fog_client_io_base', '9400')}")
+    print(f"EDGE_CIO_BASE={get_yaml_val(net_conf, 'edge_client_io_base', '10000')}")
 
-    print(f"CLOUD_SA={get_val('cloud_sa_port', '9091')}")
-    print(f"CLOUD_FL={get_val('cloud_fl_port', '9092')}")
-    print(f"CLOUD_CTRL={get_val('cloud_ctrl_port', '9093')}")
-    print(f"FOG_SA_BASE={get_val('fog_sa_base', '9190')}")
-    print(f"FOG_FL_BASE={get_val('fog_fl_base', '9290')}")
-    print(f"FOG_CTRL_BASE={get_val('fog_ctrl_base', '9390')}")
-    print(f"FOG_CIO_BASE={get_val('fog_client_io_base', '9490')}")
-    print(f"EDGE_CIO_BASE={get_val('edge_client_io_base', '9500')}")
-
-    num_fogs = int(re.search(r'num_fogs\s*=\s*(\d+)', content).group(1))
-    uniform = int(re.search(r'uniform_edges_per_fog\s*=\s*(\d+)', content).group(1))
-    custom_match = re.search(r'custom_fog_topology\s*=\s*"(\[.*?\])"', content)
-    custom_top = ast.literal_eval(custom_match.group(1)) if custom_match else []
+    num_fogs = int(get_yaml_val(net_conf, 'num_fogs', '2'))
+    uniform = int(get_yaml_val(net_conf, 'uniform_edges_per_fog', '2'))
+    
+    custom_top_str = get_yaml_val(net_conf, 'custom_fog_topology', '[]')
+    custom_top = ast.literal_eval(custom_top_str) if custom_top_str else []
+    
     edges_array = custom_top[:num_fogs] if custom_top and len(custom_top) >= num_fogs else [uniform] * num_fogs
     
     print(f"NUM_FOGS={num_fogs}")
     print(f"EDGES_PER_FOG_ARRAY=({' '.join(map(str, edges_array))})")
 except Exception as e:
-    print(f'echo "Error: {e}"; exit 1')
+    print(f'echo "Error parsing topology: {e}"; exit 1')
 EOF
 )
 eval "$CONFIG_VARS"
@@ -109,19 +122,19 @@ chmod +x "$PROJECT_ROOT/scripts/setup/setup_tpm.sh"
 "$PROJECT_ROOT/scripts/setup/setup_tpm.sh" "$NUM_FOGS" "${EDGES_PER_FOG_ARRAY[*]}"
 
 # =========================================================
-# 2. IMAGE GENERATION
+# 2. IMAGE RETRIEVAL
 # =========================================================
 docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down --remove-orphans 2>/dev/null
-mkdir -p "$LOG_DIR/system" "$LOG_DIR/nodes" "$PROJECT_ROOT/data" "$PROJECT_ROOT/.pip-cache"
+mkdir -p "$LOG_DIR/system" "$LOG_DIR/nodes" "$PROJECT_ROOT/data" 
 
-if ! docker image inspect zta-cloud-node:latest >/dev/null 2>&1; then
-    echo "⏳ Compiling Cloud Execution Image (Optimized Base)..."
-    docker build -t zta-cloud-node:latest -f docker/cloud.Dockerfile .
+if ! docker image inspect panagiotispapadopoulos/zta-cloud-node:latest >/dev/null 2>&1; then
+    echo "⏳ Pulling Pre-Built Cloud Execution Image..."
+    docker pull panagiotispapadopoulos/zta-cloud-node:latest
 fi
 
-if ! docker image inspect zta-edge-node:latest >/dev/null 2>&1; then
-    echo "⏳ Compiling Edge Execution Image (TPM Enabled / Optimized Base)..."
-    docker build -t zta-edge-node:latest -f docker/edge.Dockerfile .
+if ! docker image inspect panagiotispapadopoulos/zta-edge-node:latest >/dev/null 2>&1; then
+    echo "⏳ Pulling Pre-Built Edge Execution Image (TPM Enabled)..."
+    docker pull panagiotispapadopoulos/zta-edge-node:latest
 fi
 
 # =========================================================
@@ -177,7 +190,7 @@ cat <<EOF >> "$COMPOSE_FILE"
       - "${CLOUD_CTRL}:${CLOUD_CTRL}"
 
   cloud-serverapp:
-    image: zta-cloud-node:latest
+    image: panagiotispapadopoulos/zta-cloud-node:latest
     environment: 
       - TZ=${HOST_TZ}
     command:
@@ -192,6 +205,7 @@ cat <<EOF >> "$COMPOSE_FILE"
       - ./logs:/app/logs
       - ./data:/app/data
       - ./results:/app/results
+      - ./config:/app/config:ro
 EOF
 
 if [ "$INSECURE_MODE" = false ]; then
@@ -260,7 +274,7 @@ EOF
     depends_on: [cloud-superlink]
 
   fog-${i}-clientapp:
-    image: zta-cloud-node:latest
+    image: panagiotispapadopoulos/zta-cloud-node:latest
     environment: [TZ=${HOST_TZ}, FOG_SERVER_HOST=fog-${i}-serverapp, IPC_PORT=${FOG_CLIENT_IO}]
     command:
       - "--insecure" # Internal Docker ClientAppIo traffic is ALWAYS plaintext
@@ -273,6 +287,7 @@ EOF
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
+      - ./config:/app/config:ro
 
   fog-${i}-superlink:
     image: flwr/superlink:1.30.0
@@ -296,7 +311,7 @@ EOF
       - ./data:/app/data
 
   fog-${i}-serverapp:
-    image: zta-cloud-node:latest
+    image: panagiotispapadopoulos/zta-cloud-node:latest
     environment: [TZ=${HOST_TZ}, IPC_PORT=${FOG_SA}]
     command:
       - "--insecure" # Internal Docker ServerAppIo traffic is ALWAYS plaintext
@@ -309,6 +324,8 @@ EOF
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
+      - ./config:/app/config:ro
+      - ./runtime/tpm_state:/app/runtime/tpm_state:rw
 EOF
 
     if [ "$CURRENT_EDGES" -gt 0 ]; then
@@ -348,7 +365,7 @@ EOF
       - ./data:/app/data
 
   edge-${i}-${j}-clientapp:
-    image: zta-edge-node:latest
+    image: panagiotispapadopoulos/zta-edge-node:latest
     environment: 
       - TZ=${HOST_TZ}
       - TPM2TOOLS_TCTI=swtpm:port=2321
@@ -363,7 +380,8 @@ EOF
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      - ./data/tpm_state/edge_${i}_${j}:/app/tpm_state  # NVRAM MOUNT
+      - ./runtime/tpm_state/edge_${i}_${j}:/app/runtime/tpm_state/edge_${i}_${j}
+      - ./config:/app/config:ro
 EOF
         done
     fi
@@ -376,6 +394,21 @@ cd "$PROJECT_ROOT" || exit 1
 docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" up -d
 docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" logs -f > "$LOG_DIR/system/docker_mesh.log" 2>&1 &
 PIDS+=($!)
+
+# =========================================================
+# 4.5 OFFLINE ZERO-TRUST NETWORK PROVISIONING (COLLECTOR)
+# =========================================================
+echo "================================================="
+echo " 🛡️  FACTORY PROVISIONING (COLLECTING STATES)     "
+echo "================================================="
+echo "⏳ Waiting 5 seconds for container TPM boot sequences to complete..."
+sleep 5
+
+# Export the project root so the Python script knows where to look
+export PROJECT_ROOT="$PROJECT_ROOT"
+
+# Execute the decoupled script
+python3 "$PROJECT_ROOT/scripts/setup/collect_ledgers.py"
 
 # =================================================
 #  5. INJECTING GLOBAL CONFIGURATION (~/.flwr)     

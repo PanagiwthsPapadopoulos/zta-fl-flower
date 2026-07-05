@@ -1,25 +1,30 @@
-# Git history
+# Git History
 .git/
 .gitignore
 
-# Python virtual environments
+# Python Virtual Environments
 .venv/
 .venv-zta/
-.venv*
+.venv*/
 venv/
 env/
 
-# Python cache
+# Python Cache & Compiled Artifacts
 __pycache__/
 *.pyc
-
-# Local logs and temporary states
-logs/
+*.pyo
+*.pyd
 .pytest_cache/
 
-# Docker files 
+# Local Runtime Data, Logs & Mesh States
+logs/
+.pytest_cache/
+runtime/tpm_state/
+
+# Docker Deployments (Targeted Overrides)
 docker-compose.yml
 superexec.Dockerfile
 
-# Mac system files
+# OS System Files
 .DS_Store
+Thumbs.db

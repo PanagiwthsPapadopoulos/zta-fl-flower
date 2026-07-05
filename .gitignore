@@ -1,6 +1,7 @@
 # ZTA-FL Project Specific
 logs/
 results/
+runtime/
 
 # Virtual Environments
 .venv-zta/

@@ -1,0 +1,79 @@
+# =========================================================================
+# ZTA-FL THREAT MATRIX
+# Autonomous Adversarial Orchestration Configuration
+# =========================================================================
+
+adversaries:
+
+  # -----------------------------------------------------------------------
+  # 1. The Replay Attacker
+  # Target Wall: The Gatekeeper (Cryptographic Nonce Validation)
+  # Behavior: Behaves normally for x-1 rounds. On Round x, it attempts to 
+  #           resubmit its valid token from Round x-1 instead of signing 
+  #           the server's new nonce.
+  # Expected Result: Immediate rejection (Nonce Mismatch) & Quarantine.
+  # -----------------------------------------------------------------------
+  - fog_num: 1
+    edge_num: 1
+    attack_type: "tpm_replay"
+    enabled: false
+    activate_on_round: 9
+
+# -----------------------------------------------------------------------
+  # 2. The Forger / Man-in-the-Middle
+  # Target Wall: The Gatekeeper (Signature Integrity Verification)
+  # Behavior: Behaves normally in Round x-1. On Round x, it generates a real
+  #           TPM token, but manually corrupts the RSA signature bytes before 
+  #           transmitting it over the network.
+  # Expected Result: Immediate rejection (Signature Verification Failed) & Quarantine.
+  # -----------------------------------------------------------------------
+  - fog_num: 2
+    edge_num: 1
+    attack_type: "tpm_forgery"
+    enabled: false
+    activate_on_round: 2
+
+# -----------------------------------------------------------------------
+  # 3. The Rootkit / Malware Infection
+  # Target Wall: The Gatekeeper (PCR Health Verification)
+  # Behavior: Simulates an OS-level malware infection. The TPM operates 
+  #           normally and the signature is mathematically perfect, but the 
+  #           Platform Configuration Registers (PCRs) reflect a hacked OS state.
+  # Expected Result: Immediate rejection (PCR Health Check Failed) & Quarantine.
+  # -----------------------------------------------------------------------
+  - fog_num: 1
+    edge_num: 1
+    attack_type: "pcr_alteration"
+    enabled: false
+    activate_on_round: 2
+
+  # -----------------------------------------------------------------------
+  # 4. The Sleeper Agent (Model Poisoning)
+  # Target Wall: The Aggregator (SHAP Statistical Evaluation)
+  # Behavior: Passes all hardware attestation checks perfectly every round. 
+  #           In Rounds x-2 and x-1, it sends honest PyTorch weights. On Round x, 
+  #           it injects corrupted/randomized weights into the payload.
+  # Expected Result: SHAP evaluator flags anomalous contribution, Gatekeeper
+  #                  drops the weights, and TrustDB score gets slashed.
+  # -----------------------------------------------------------------------
+  - fog_num: 1
+    edge_num: 1
+    attack_type: "model_poisoning"
+    enabled: false
+    activate_on_round: 1
+
+  # -----------------------------------------------------------------------
+  # 5. The Data Poisoner (Label Flipping)
+  # Target Wall: The Aggregator & TrustDB Decay Mechanics
+  # Behavior: Passes all hardware checks perfectly. Starting immediately 
+  #           in Round x, it actively trains on a corrupted local dataset 
+  #           (e.g., flipping malicious network traffic labels to benign).
+  # Expected Result: Slowly bleeds TrustDB score over several rounds as its 
+  #                  subtle degradation fails to meet the SHAP threshold, 
+  #                  eventually hitting the < 0.6 Quarantine Boundary.
+  # -----------------------------------------------------------------------
+  - fog_num: 2
+    edge_num: 1
+    attack_type: "label_flipping"
+    enabled: false
+    activate_on_round: 2

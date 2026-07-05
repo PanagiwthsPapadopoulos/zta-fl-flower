@@ -23,7 +23,7 @@ CONDITIONAL_VARS = {
     "backdoor_poison_fraction", "backdoor_target_class", "backdoor_trigger_features",
     "backdoor_trigger_value", "pgd_adv_ratio", "pgd_eps", "pgd_alpha", "pgd_n_iter",
     "fgsm_adv_ratio", "fgsm_eps", "fgsm_alpha", "benign_adv_ratio", "benign_eps",
-    "benign_alpha", "benign_n_iter", "shap_aware_base_attack", "shap_tau"
+    "benign_alpha", "benign_n_iter", "shap_aware_base_attack", "shap_threshold"
 }
 
 def load_toml_config(toml_path: str = "pyproject.toml") -> dict:

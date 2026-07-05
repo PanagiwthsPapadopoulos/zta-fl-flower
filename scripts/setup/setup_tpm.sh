@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================================
-# setup_tpms.sh
+# setup_tpm.sh
 
 # Initializes the local NVRAM storage directories for the
 # Software TPM 2.0 emulators.
@@ -12,7 +12,7 @@ EDGES_ARRAY=($2)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-TPM_BASE_DIR="$PROJECT_ROOT/data/tpm_state"
+TPM_BASE_DIR="$PROJECT_ROOT/runtime/tpm_state"
 
 echo "[DEBUG TPM] ---------------------------------------"
 echo "[DEBUG TPM] Provisioning Hardware State Directories"
