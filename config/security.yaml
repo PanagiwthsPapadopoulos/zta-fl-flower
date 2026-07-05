@@ -1,18 +1,18 @@
 # Global Security
 simulate_global_leakage: true           # true = The Paper's Method. false = Strict Real-World Security
-shap_aware_base_attack: "label_flip"    # Base attack for shap-aware adversaries
-rollback_threshold: 0.00                # Accuracy threshold. If global accuracy drops below this, weights revert to previous round
+shap_aware_base_attack: "label_flip"    # Base attack for shap-aware adversaries. Select one from label_flip, gradient_manipulation. If an invalid attack name is inserted, honest training is performed
+rollback_threshold: 0.80                # Accuracy threshold. If global accuracy drops below this, weights revert to previous round
 tpm_freshness_window: 120               # Expiration Duration for timestamp on TPM emulator in seconds
 
 # Threat Model
 # Values represent the proportion of the total edge network assigned to a specific attack.
 # The sum of all ratios MUST NOT exceed 1.0. Remaining fraction (1.0 - sum) defaults to Benign nodes.
-label_flip_ratio: 0.05                   # Proportion of edge agents that randomly swap true labels
-grad_manip_ratio: 0.5                   # Proportion of edge agents that scale up gradients to overpower aggregation
-backdoor_ratio: 0.05                     # Proportion of edge agents injecting targeted deterministic patterns
-pgd_ratio: 0.05                          # Proportion of edge agents training on iterative PGD adversarial examples
-fgsm_ratio: 0.15                         # Proportion of edge agents training on single-step FGSM adversarial examples
-shap_aware_ratio: 0.1                   # Proportion of edge agents that are exploiting the SHAP-aware architecture
+label_flip_ratio: 0.0                   # Proportion of edge agents that randomly swap true labels
+grad_manip_ratio: 0.0                   # Proportion of edge agents that scale up gradients to overpower aggregation
+backdoor_ratio: 0.0                     # Proportion of edge agents injecting targeted deterministic patterns
+pgd_ratio: 0.0                          # Proportion of edge agents training on iterative PGD adversarial examples
+fgsm_ratio: 0.0                         # Proportion of edge agents training on single-step FGSM adversarial examples
+shap_aware_ratio: 0.0                   # Proportion of edge agents that are exploiting the SHAP-aware architecture
 
 # Attack Profiles
 # Label Flipping
@@ -25,14 +25,13 @@ backdoor_target_class: 0              # The exact integer label the backdoor att
 backdoor_trigger_features: "[-3, -2, -1]" # Array string dictating which exact feature indices to modify with the trigger
 backdoor_trigger_value: 1.5           # The numerical magnitude injected into the selected trigger features
 # PGD
-pgd_adv_ratio: 0.0                    # Percentage of a malicious node's batch replaced with PGD examples
+pgd_adv_ratio: 0.4                    # Percentage of a malicious node's batch replaced with PGD examples
 pgd_eps: 0.1                          # Maximum allowed perturbation radius (L-infinity budget)
 pgd_alpha: 0.01                       # Step size taken in the direction of the gradient per iteration
-pgd_n_iter: 7                         # Number of iterative projection steps taken by the PGD algorithm
+pgd_n_iter: 9                         # Number of iterative projection steps taken by the PGD algorithm
 # FGSM
-fgsm_adv_ratio: 0.2                   # Percentage of a malicious node's batch replaced with FGSM examples
+fgsm_adv_ratio: 0.5                   # Percentage of a malicious node's batch replaced with FGSM examples
 fgsm_eps: 0.2                         # Maximum allowed perturbation radius (L-infinity budget)
-fgsm_alpha: 0.02                      # Magnitude of the single gradient step
 
 # Defenses
 # ZTA-FL

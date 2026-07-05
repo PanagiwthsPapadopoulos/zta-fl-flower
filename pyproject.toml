@@ -33,8 +33,8 @@ exclude = [
 packages = ["src"]
 
 [tool.flwr.app.components]
-serverapp = "src.core.server:app"
-clientapp = "src.core.client:app"
+serverapp = "src.entrypoints.server:app"
+clientapp = "src.entrypoints.client:app"
 
 [tool.flwr.app.config]
 fog_id = "fog_0"                          # String identifier for fog instances (ignored if tier is cloud)

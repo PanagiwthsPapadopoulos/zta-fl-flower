@@ -89,64 +89,59 @@ flowchart TB
 
 ## Project Structure
 
-```text
-zta-fl/
-├── data/                      # Raw datasets and info
-│   ├── cic_ids2017/           
-│   ├── edge_iiotset/          
-│   └── unsw_nb15/             
-├── logs/                      # Live execution logs for all network nodes
-├── results/                   # JSON outputs and generated figures
-├── src/                       # STRICTLY Node Runtime Code (Deployed to physical machines)
-│   ├── federation/            # Flower FL logic (server.py, client.py, aggregation.py)
-│   ├── models/                # ML architectures (cnn_lstm.py, factory.py)
-│   ├── network/               # Custom IPC routing, NGINX configs, and active mTLS certs
-│   ├── security/              # Threat injection (adversarial.py, backdoor.py)
-│   └── utils/                 # Metrics, data loaders, compression, and logging
-├── scripts/                   # Bash Orchestration (DevOps & Infrastructure)
-│   ├── ops/                   # Day-to-day execution (boot_network.sh, run_local_test.sh)
-│   ├── setup/                 # One-time provisioning (setup_nginx.sh, setup_security.sh)
-│   └── tests/                 # Standalone tests for different parts of the infrastructure
-├── verification/              # Pre-Flight Checks & Static Analysis
-│   ├── check_hardcoded_params.py # Linter enforcing dynamic parameters
-│   ├── check_max_params.py    # System resource and constraint validation
-│   ├── verify_configs.py      # TOML validator
-│   └── verify_pipeline.py     # End-to-end data flow validation
-├── tools/                     # Offline Local Utilities & Analytics (Not deployed)
-│   ├── generate_random_toml.py # Topology fuzzer and generator
-│   └── plot_metrics.py        # Generates figures from JSON result logs
-└── pyproject.toml             # Master configuration file (Topology, FL, Security)
 ```
-
+zta-fl-flower/
+├── config/                    # Configuration files for architecture parameter tuning
+├── data/                      # Raw datasets (cic_ids2017, edge_iiotset, unsw_nb15)
+├── logs/                      # Live execution logs for all network nodes
+├── results/                   # JSON outputs and global models
+├── runtime/                   # Local state and TPM ledgers (e.g., tpm_state/)
+├── src/                       # Core Node Runtime Code (Deployed to physical machines)
+│   ├── entrypoints/           # Flower application initializers (server.py, client.py)
+│   ├── shared/                # Shared logic utilized across multiple tiers
+│   │   ├── data/              # Data loading, SMOTE, and non-IID partitioning
+│   │   ├── models/            # ML architectures
+│   │   ├── network/           # IPC routing and custom 8-bit quantization mechanics
+│   │   ├── security/          # Threat injection (adversarial_math.py, backdoor_math.py)
+│   │   └── utils/             # Evaluation metrics, configs, and admin console
+│   ├── tier_cloud/            # Cloud Layer 
+│   ├── tier_edge/             # Edge Layer 
+│   └── tier_fog/              # Fog Layer
+├── scripts/                   # Helpful scripts for operation and setup
+├── tools/                     # Offline Local Utilities & Analytics 
+├── verification/              # Pre-Flight Checks & Static Analysis
+├── ZTA_FL_Architecture_Parity_Report.md # Architecture parity report
+└── pyproject.toml             # Flower configuration file 
+```
 ---
 
 ## System Prerequisites
 
-This architecture heavily relies on **DOCKER**, **OPENSSL** and several standard Linux network utilities. Before running the python environment or orchestration scripts, you must install the following:
+This architecture heavily relies on **DOCKER** and **OPENSSL**. Before running the python environment or orchestration scripts, you must install the following:
 
 **Ubuntu/Debian:**
 ```bash
 sudo apt update
-sudo apt install openssl netcat-openbsd lsof
+sudo apt install openssl
 ```
 
 **macOS:**
 ```bash
-brew install  openssl netcat lsof
+brew install openssl
 ```
 
 ---
 
 ## Configuration & Customization
 
-The entire behavior of the distributed network, machine learning models, and threat environment is controlled centrally via `pyproject.toml`. 
+The entire behavior of the distributed network, machine learning models, and threat environment is controlled centrally via the `configs/` directory. 
 
 Key sections you can modify:
 
-* **Topology (`[tool.flwr.app.config]`):** Scale the network by adjusting `num_fogs` and `uniform_edges_per_fog`. You can even dictate custom distributions using `custom_fog_topology`.
-* **Strategy:** Change the aggregation strategy by editing the `strategy` variable (e.g., `"zta"`, `"fedavg"`, `"krum"`, `"trimmed_mean"`).
-* **Data Dynamics:** Control non-IID data distribution using `n_classes_per` (label skew) and `power_law_a` (quantity skew). 
-* **Threat Model:** Introduce malicious agents seamlessly by adjusting the ratios under the `MULTI-VECTOR THREAT MODEL` section:
+* **Topology (`configs/network.yaml`):** Scale the network by adjusting `num_fogs` and `uniform_edges_per_fog`. You can even dictate custom distributions using `custom_fog_topology`.
+* **Strategy (`configs/training.yaml`):** Change the aggregation strategy by editing the `strategy` variable (e.g., `"zta"`, `"fedavg"`, `"krum"`, `"trimmed_mean"`).
+* **Data Dynamics (`configs/training.yaml`):** Control non-IID data distribution using `n_classes_per` (label skew) and `power_law_a` (quantity skew). 
+* **Threat Model (`configs/security.yaml`):** Introduce malicious agents seamlessly by adjusting the ratios under the `MULTI-VECTOR THREAT MODEL` section:
   * `label_flip_ratio = 0.2` (Turns 20% of edges into label-flippers)
   * `grad_manip_ratio = 0.1`
   * `backdoor_ratio = 0.0`
@@ -166,7 +161,7 @@ Three publicly available network intrusion datasets are supported in the `data/`
 | **CIC-IDS2017** | Network flow records from a general enterprise network. |
 | **UNSW-NB15** | Network intrusion records from the UNSW cyber range. |
 
-Configure which dataset to use by updating the `dataset` and `dataset_path` variables in `pyproject.toml`.
+Configure which dataset to use by updating the `dataset` and `dataset_path` variables in `configs/training.yaml`.
 
 ---
 
@@ -190,13 +185,6 @@ chmod +x scripts/ops/deploy_code_docker.sh
 ./scripts/ops/deploy_code_docker.sh
 ```
 
-### Automated Security Provisioning (PKI)
-When you run the boot script, it automatically acts as a local Certificate Authority (CA) and provisions the required Public Key Infrastructure (PKI) for the Zero-Trust NGINX routing. 
-
-The newly minted client certificates, private keys, and Root CAs are generated and stored locally in `src/network/certs/`. **These cryptographic identities are git-ignored and never leave your machine.**
-
-> **Note:** If you change your network topology in `pyproject.toml` (e.g., adding more Fog nodes or Edge clients), the boot script will detect the existing keys and prompt you to wipe them and regenerate a new cryptographic identity to match the new topology.
-
 > 🛑 **CRITICAL WARNING: GLOBAL CONFIGURATION OVERWRITE**
 > 
 > In current versions of Flower, routing is managed globally via the `~/.flwr/config.toml` file. According to **[Flower Issue #6824](https://github.com/flwrlabs/flower/issues/6824)**, there is currently no native support for isolated, per-project SuperLink configurations.
@@ -208,47 +196,25 @@ The newly minted client certificates, private keys, and Root CAs are generated a
 > **Note:** Windows users must use WSL (Windows Subsystem for Linux) to run the orchestration bash scripts
 
 
-## Diagnostics & Testing
-
-To ensure the integrity of the defense-in-depth mechanisms, this repository includes dedicated diagnostic suites that isolate and verify specific architectural components without requiring a full federated training loop.
-
-### 1. Hardware Attestation (TPM 2.0 Core)
-Before executing the federated learning pipeline, you can test the local silicon (or `swtpm` emulator) to guarantee cryptographic readiness. This diagnostic suite dynamically tests the engine's ability to handle persistent memory limits, session leaks, dictionary attack lockouts, and payload tampering.
-
-Run the deep-dive diagnostic suite from inside an active Edge container:
-
-```bash
-docker exec -it zta-fl-flower-edge-1-1-clientapp-1 python3 scripts/tests/test_tpm.py
-```
-
-### 2. Trust Database & Hardware Integration (State Machine Core)
-Following hardware validation, you can test the Fog layer's state machine integrated directly with the physical TPM. This diagnostic suite dynamically verifies the TrustDB's mathematical boundaries, evaluating reward scaling, quarantine enforcement via forged signatures, interrupted rehabilitation protocols, and terminal node exhaustion over a simulated connection.
-
-Run the integration diagnostic suite from inside an active Edge container:
-
-```bash
-docker exec -it zta-fl-flower-edge-1-1-clientapp-1 python3 scripts/tests/test_trust_db.py
-```
-
 ## Monitoring & Logs
 The terminal displays the architecture map and then holds the process. The flow of the pipeline for the whole network written to the `logs/` directory:
 
 ```bash
 # Watch the Cloud (Global convergence)
-tail -f logs/system/run_cloud.log
+tail -f logs/nodes/cloud_server.jsonl
 
 # Watch a specific Fog (Local aggregation & Security filtering)
-tail -f logs/system/run_fog1.log
+tail -f logs/nodes/fog_1_server.jsonl
 
-# Watch an Edge Node (Local BiLSTM training & TPM Attestation)
-tail -f logs/system/edge1_1_supernode.log
+# Watch an Edge Node (Local training & TPM Attestation)
+tail -f logs/nodes/edge1_1.jsonl
 ```
 Otherwise, you can watch the pipeline update live using the following command:
 
 ```python
 python3 verification/verify_pipeline.py -w
 ```
-> **Note:** The `logs/` directory is **wiped clean at the start of every run.** Ensure you export any critical training metrics before restarting the network.
+> **Note:** The `logs/` directory is **wiped clean at the start of every run.** Ensure you export any critical log instances before restarting the network.
 
 ---
 
@@ -257,6 +223,13 @@ python3 verification/verify_pipeline.py -w
 Once the network finishes its communication rounds, the results, including aggregated metrics and layer weights, are saved as JSON files in the `results/` directory.
 
 You can generate visualizations (like Accuracy vs. Communication Rounds, or SHAP stability distributions) using the provided script:
+
+* **Create and Activate the virtual environment & Install matplotlib**
+```
+python3 -m venv .venv-zta
+source .venv-zta/bin/activate
+pip install "matplotlib>=3.10.9"
+```
 
 * **Auto-detect latest run:** 
 ```

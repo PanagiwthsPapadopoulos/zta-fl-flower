@@ -60,7 +60,7 @@ adversaries:
     edge_num: 1
     attack_type: "model_poisoning"
     enabled: false
-    activate_on_round: 2
+    activate_on_round: 1
 
   # -----------------------------------------------------------------------
   # 5. The Data Poisoner (Label Flipping)

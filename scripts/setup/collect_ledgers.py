@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import hashlib
 
 def main():
     # Fetch the root directory dynamically passed from the bash script
@@ -23,10 +24,18 @@ def main():
                 if os.path.exists(id_file) and os.path.exists(pcr_file):
                     with open(id_file, "r") as f:
                         tpm_id = f.read().strip()
-                    with open(pcr_file, "rb") as f:
-                        pcr_b64 = base64.b64encode(f.read()).decode('utf-8')
                         
-                    unified_ledger[tpm_id] = pcr_b64
+                    with open(pcr_file, "rb") as f:
+                        data = f.read()
+                        
+                    # Locate the 32-byte SHA-256 PCR value inside the binary structure
+                    idx = data.find(b'\x00\x20')
+                    pcr_value = data[idx+2 : idx+34] if idx != -1 else data[-32:]
+                    
+                    # Compute the hardware pcrDigest expected by the fog server
+                    pcr_hex = hashlib.sha256(pcr_value).hexdigest()
+                        
+                    unified_ledger[tpm_id] = pcr_hex
                     print(f"  ✅ Extracted {dirname} -> ID: {tpm_id[:16]}...")
                 else:
                     print(f"  ⚠️ Warning: {dirname} is missing files. Wait for container to finish booting.")

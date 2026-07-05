@@ -122,19 +122,19 @@ chmod +x "$PROJECT_ROOT/scripts/setup/setup_tpm.sh"
 "$PROJECT_ROOT/scripts/setup/setup_tpm.sh" "$NUM_FOGS" "${EDGES_PER_FOG_ARRAY[*]}"
 
 # =========================================================
-# 2. IMAGE GENERATION
+# 2. IMAGE RETRIEVAL
 # =========================================================
 docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down --remove-orphans 2>/dev/null
-mkdir -p "$LOG_DIR/system" "$LOG_DIR/nodes" "$PROJECT_ROOT/data" "$PROJECT_ROOT/.pip-cache"
+mkdir -p "$LOG_DIR/system" "$LOG_DIR/nodes" "$PROJECT_ROOT/data" 
 
-if ! docker image inspect zta-cloud-node:latest >/dev/null 2>&1; then
-    echo "⏳ Compiling Cloud Execution Image (Optimized Base)..."
-    docker build -t zta-cloud-node:latest -f docker/cloud.Dockerfile .
+if ! docker image inspect panagiotispapadopoulos/zta-cloud-node:latest >/dev/null 2>&1; then
+    echo "⏳ Pulling Pre-Built Cloud Execution Image..."
+    docker pull panagiotispapadopoulos/zta-cloud-node:latest
 fi
 
-if ! docker image inspect zta-edge-node:latest >/dev/null 2>&1; then
-    echo "⏳ Compiling Edge Execution Image (TPM Enabled / Optimized Base)..."
-    docker build -t zta-edge-node:latest -f docker/edge.Dockerfile .
+if ! docker image inspect panagiotispapadopoulos/zta-edge-node:latest >/dev/null 2>&1; then
+    echo "⏳ Pulling Pre-Built Edge Execution Image (TPM Enabled)..."
+    docker pull panagiotispapadopoulos/zta-edge-node:latest
 fi
 
 # =========================================================
@@ -190,7 +190,7 @@ cat <<EOF >> "$COMPOSE_FILE"
       - "${CLOUD_CTRL}:${CLOUD_CTRL}"
 
   cloud-serverapp:
-    image: zta-cloud-node:latest
+    image: panagiotispapadopoulos/zta-cloud-node:latest
     environment: 
       - TZ=${HOST_TZ}
     command:
@@ -274,7 +274,7 @@ EOF
     depends_on: [cloud-superlink]
 
   fog-${i}-clientapp:
-    image: zta-cloud-node:latest
+    image: panagiotispapadopoulos/zta-cloud-node:latest
     environment: [TZ=${HOST_TZ}, FOG_SERVER_HOST=fog-${i}-serverapp, IPC_PORT=${FOG_CLIENT_IO}]
     command:
       - "--insecure" # Internal Docker ClientAppIo traffic is ALWAYS plaintext
@@ -311,7 +311,7 @@ EOF
       - ./data:/app/data
 
   fog-${i}-serverapp:
-    image: zta-cloud-node:latest
+    image: panagiotispapadopoulos/zta-cloud-node:latest
     environment: [TZ=${HOST_TZ}, IPC_PORT=${FOG_SA}]
     command:
       - "--insecure" # Internal Docker ServerAppIo traffic is ALWAYS plaintext
@@ -326,7 +326,6 @@ EOF
       - ./data:/app/data
       - ./config:/app/config:ro
       - ./runtime/tpm_state:/app/runtime/tpm_state:rw
-      - ./runtime/gatekeeper:/app/runtime/gatekeeper
 EOF
 
     if [ "$CURRENT_EDGES" -gt 0 ]; then
@@ -366,7 +365,7 @@ EOF
       - ./data:/app/data
 
   edge-${i}-${j}-clientapp:
-    image: zta-edge-node:latest
+    image: panagiotispapadopoulos/zta-edge-node:latest
     environment: 
       - TZ=${HOST_TZ}
       - TPM2TOOLS_TCTI=swtpm:port=2321

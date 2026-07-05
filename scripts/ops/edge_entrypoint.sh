@@ -31,7 +31,7 @@ echo "✅ TPM TCTI configured."
 tpm2_startup -c || true
 
 # =====================================================================
-# NATIVE PROVISIONING: Call the existing TPMEngine automatically
+# NATIVE PROVISIONING: Call the existing TPMAttestation automatically
 # =====================================================================
 echo "⚙️ Provisioning TPM Identity and PCR Baseline natively..."
 EDGE_NAME=$(basename "$TPM_DIR")
@@ -40,15 +40,15 @@ EDGE_NUM=$(echo $EDGE_NAME | cut -d'_' -f3)
 
 python3 -c "
 import logging
-from src.security.attestation.tpm_core import TPMEngine
+from src.tier_edge.tpm_attestation import TPMAttestation
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('Bootstrapper')
 
-# This automatically  _provision_ak() 
-tpm = TPMEngine(logger=logger)
+# This automatically runs _provision_ak() 
+tpm = TPMAttestation(logger=logger)
 
 # Automatically export the ID and PCR to the volume
-tpm.generate_attestation_token(nonce='FACTORY_BOOT_NONCE', software_label='[EDGE ${FOG_NUM}_${EDGE_NUM}]')
+tpm.generate_attestation_token(nonce='FACTORY_BOOT_NONCE', software_label='[EDGE ${FOG_NUM}_${EDGE_NUM}]', round_num=0)
 "
 echo "✅ TPM Bootstrap complete. Keys and Baseline secured in volume."
 # =====================================================================
