@@ -13,10 +13,12 @@ def load_logs():
     Fetches raw execution records generating chronological mapping sets corresponding to network iterations.
     """
     all_logs = []
-    log_files = glob.glob(f"{LOG_DIR}/*.jsonl")
+    
+    # UPDATED: Use recursive globbing to search all nested container sub-directories
+    log_files = glob.glob(f"{LOG_DIR}/**/*.jsonl", recursive=True)
     
     if not log_files:
-        print(f"❌ Error: No .jsonl files found in {LOG_DIR}/")
+        print(f"❌ Error: No .jsonl files found in {LOG_DIR}/ or its sub-directories")
         return []
 
     for file_path in log_files:

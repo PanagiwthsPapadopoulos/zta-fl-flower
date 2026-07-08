@@ -47,6 +47,7 @@ class Client(NumPyClient):
             from src.tier_edge.local_ids import EdgeTrainer
             from src.tier_edge.byzantine_simulator import AdversaryManager
 
+            # Init AdversaryManager for injecting threats configured in config/threat.yaml
             self.adversary_manager = AdversaryManager(
                 fog_num=self.fog_num, 
                 edge_num=self.edge_num, 
@@ -55,6 +56,7 @@ class Client(NumPyClient):
 
             self.train_loader = self.adversary_manager.corrupt_data_if_needed(self.train_loader)
 
+            # Init EdgeTrainer for training on edge devices
             self.trainer = EdgeTrainer(
                 logger=self.logger, log_prefix=self.log_prefix, model=self.model,
                 train_loader=self.train_loader, device=self.device,
@@ -154,7 +156,9 @@ def client_fn(context: Context):
         log_prefix = f"[EDGE {fog_num}_{partition_id}]" 
         logger = setup_logger(log_prefix)
 
+        # Edge Node Logic
         try: 
+            # Extract variables
             custom_top_str = str(run_config.get("custom_fog_topology", "[]"))
             custom_topology = ast.literal_eval(custom_top_str) if custom_top_str.strip() else []
             num_fogs = int(run_config.get("num_fogs", 2))
@@ -170,6 +174,7 @@ def client_fn(context: Context):
             edges_before_me = sum(topology[:fog_num-1]) if fog_num > 1 else 0
             global_index = edges_before_me + internal_id 
 
+            # Assign Roles
             from src.shared.security.threat_profiler import assign_edge_roles
             role = assign_edge_roles(run_config, total_edges, global_index, master_seed, logger)
                 
@@ -190,22 +195,18 @@ def client_fn(context: Context):
                 "shap_threshold": float(run_config.get("shap_threshold", 0.15)),
                 "shap_aware_base_attack": str(run_config.get("shap_aware_base_attack", "label_flip")),
                 "robustness_eval_attack": str(run_config.get("robustness_eval_attack", "pgd")),
-                "pgd_n_iter": int(run_config.get("pgd_n_iter", 7)),
                 "shap_explain_count": int(run_config.get("shap_explain_count", 15)),
                 "shap_val_samples": int(run_config.get("shap_val_samples", 100)),
             }
             
-            if role in ["pgd", "fgsm"]:
-                train_config["adv_ratio"] = float(run_config.get(f"{role}_adv_ratio", 0.3))
-                train_config["eps"] = float(run_config.get(f"{role}_eps", 0.1))
-                train_config["alpha"] = float(run_config.get(f"pgd_alpha", 0.01))
-                train_config["n_iter"] = int(run_config.get(f"pgd_n_iter", 7))
-            elif role == "benign":
+            # Load BENIGN role variables
+            if role == "benign":
                 train_config["adv_ratio"] = float(run_config.get("benign_adv_ratio", 0.3))
                 train_config["eps"] = float(run_config.get("benign_eps", 0.05))
                 train_config["alpha"] = float(run_config.get("benign_alpha", 0.01))
                 train_config["n_iter"] = int(run_config.get("benign_n_iter", 3))
             
+            # Load EXTRA roles variables
             if role == "label_flip":
                 train_config["p_flip"] = float(run_config.get("p_flip", 1.0))
             if role == "gradient_manip":
@@ -216,14 +217,12 @@ def client_fn(context: Context):
             
             global GLOBAL_DATA_CACHE
             
-            apply_smote = run_config.get("apply_smote", False)
+            apply_smote = run_config.get("apply_smote", True)
             simulate_leakage = run_config.get("simulate_global_leakage", False)
             n_classes_per = int(run_config.get("n_classes_per", 3))
 
             cache_key = f"train_{dataset_name}_{dataset_fraction}_{simulate_leakage}_{apply_smote}"
-            
-            logger.debug(f"[CONFIG USAGE] get_dataset | simulate_global_leakage: {simulate_leakage}, apply_smote: {apply_smote}, n_classes_per: {n_classes_per}")
-            
+                        
             if cache_key not in GLOBAL_DATA_CACHE:
                 X_full, y_full, n_classes_eval = get_dataset(
                     dataset_name, dataset_path, num_classes, random_seed, 
@@ -237,6 +236,7 @@ def client_fn(context: Context):
                 X_full = X_full[indices]
                 y_full = y_full[indices]
 
+                # Partition Dataset according to config parameters
                 if dataset_fraction < 1.0:
                     subset_size = int(len(X_full) * dataset_fraction)
                     X_full = X_full[:subset_size]
@@ -246,10 +246,13 @@ def client_fn(context: Context):
             else:
                 X_full, y_full, n_classes_eval = GLOBAL_DATA_CACHE[cache_key]
 
+            # Split the data across the edge devices to simulate real world data traffic from different devices
             power_law_a = float(run_config.get("power_law_a", 0.4))
             partitions = non_iid_partition(X=X_full, y=y_full, n_agents=total_edges, n_classes_per=n_classes_per, power_law_a=power_law_a, seed=master_seed)
             X_part, y_part = partitions[global_index % len(partitions)]
             
+            # After preparing the dataset, check if the node must perform a backdoor 
+            # If so, poison the data
             if role == "backdoor":
                 poison_fraction = float(run_config.get("backdoor_poison_fraction", 0.5))
                 target_class = int(run_config.get("backdoor_target_class", 0))
@@ -286,6 +289,7 @@ def client_fn(context: Context):
             logger.error(f"FATAL CRASH DURING BOOT: {e}\n{traceback.format_exc()}")
             raise e
         
+    # Fog Node Logic
     else:
         logger, node_type, log_prefix, fog_num, train_config = _build_fog_client(run_config, node_config)
 

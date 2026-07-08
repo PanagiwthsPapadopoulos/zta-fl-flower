@@ -141,6 +141,14 @@ fi
 # 3. DOCKER COMPOSE TOPOLOGY GENERATION
 # =========================================================
 
+# Global Mount Variables 
+SHARED_DATA_MOUNT="./data"
+SHARED_CONFIG_MOUNT="./config"
+
+# Cloud Mount Variables
+CLOUD_LOG_MOUNT="./logs/nodes/cloud"
+CLOUD_RESULTS_MOUNT="./results"
+
 cat <<EOF > "$COMPOSE_FILE"
 name: ${COMPOSE_PROJECT_NAME}
 
@@ -171,16 +179,16 @@ cat <<EOF >> "$COMPOSE_FILE"
       - "--ssl-keyfile=/app/certs/cloud_server/private-key.pem"
       - "--ssl-ca-certfile=/app/certs/cloud_ca/ca.crt"
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ${CLOUD_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data
       - "$CERTS_DIR:/app/certs:ro"
 EOF
 else
 cat <<EOF >> "$COMPOSE_FILE"
       - "--insecure"
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ${CLOUD_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data
 EOF
 fi
 
@@ -202,10 +210,10 @@ cat <<EOF >> "$COMPOSE_FILE"
     networks: [flwr-network]
     depends_on: [cloud-superlink]
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - ./results:/app/results
-      - ./config:/app/config:ro
+      - ${CLOUD_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data
+      - ${CLOUD_RESULTS_MOUNT}:/app/results
+      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
 EOF
 
 if [ "$INSECURE_MODE" = false ]; then
@@ -227,6 +235,9 @@ for i in $(seq 1 $NUM_FOGS); do
     FOG_CTRL=$((FOG_CTRL_BASE + i))
     FOG_CLIENT_IO=$((FOG_CIO_BASE + i))
     CURRENT_EDGES=${EDGES_PER_FOG_ARRAY[$((i-1))]:-0}
+    
+    # Fog Mount Variable 
+    FOG_LOG_MOUNT="./logs/nodes/fog_${i}"
     
     if [ "$INSECURE_MODE" = false ]; then
         FOG_INTERNAL_FL=$((FOG_FL_BASE + 10000 + i))
@@ -257,16 +268,16 @@ EOF
     cat <<EOF >> "$COMPOSE_FILE"
       - "--root-certificates=/app/certs/cloud_ca/ca.crt" # Secure Uplink to Cloud
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ${FOG_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data:ro
       - "$CERTS_DIR:/app/certs:ro"
 EOF
     else
     cat <<EOF >> "$COMPOSE_FILE"
       - "--insecure"
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ${FOG_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data:ro
 EOF
     fi
     cat <<EOF >> "$COMPOSE_FILE"
@@ -285,9 +296,9 @@ EOF
     networks: [flwr-network]
     depends_on: [fog-${i}-supernode]
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - ./config:/app/config:ro
+      - ${FOG_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data:ro
+      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
 
   fog-${i}-superlink:
     image: flwr/superlink:1.30.0
@@ -307,8 +318,8 @@ EOF
     ports: 
       - "${FOG_CTRL}:${FOG_CTRL}"
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ${FOG_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data:ro
 
   fog-${i}-serverapp:
     image: panagiotispapadopoulos/zta-cloud-node:latest
@@ -322,9 +333,9 @@ EOF
     networks: [flwr-network]
     depends_on: [fog-${i}-superlink]
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
-      - ./config:/app/config:ro
+      - ${FOG_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data:ro
+      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
       - ./runtime/tpm_state:/app/runtime/tpm_state:rw
 EOF
 
@@ -332,6 +343,9 @@ EOF
         for j in $(seq 1 "$CURRENT_EDGES"); do
             EDGE_CLIENT_IO=$((EDGE_CIO_BASE + (i * 100) + j))
             EDGE_PROXY_PORT=$((FOG_FL_BASE + 20000 + (i * 100) + j))
+            
+            # Edge Mount Variable 
+            EDGE_LOG_MOUNT="./logs/nodes/edge_${i}_${j}"
             
             if [ "$INSECURE_MODE" = false ]; then
                 EDGE_UPLINK="nginx-proxy:${EDGE_PROXY_PORT}"
@@ -361,8 +375,8 @@ EOF
     networks: [flwr-network]
     depends_on: [fog-${i}-superlink]
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ${EDGE_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data:ro
 
   edge-${i}-${j}-clientapp:
     image: panagiotispapadopoulos/zta-edge-node:latest
@@ -378,10 +392,10 @@ EOF
     networks: [flwr-network]
     depends_on: [edge-${i}-${j}-supernode]
     volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ${EDGE_LOG_MOUNT}:/app/logs
+      - ${SHARED_DATA_MOUNT}:/app/data:ro
       - ./runtime/tpm_state/edge_${i}_${j}:/app/runtime/tpm_state/edge_${i}_${j}
-      - ./config:/app/config:ro
+      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
 EOF
         done
     fi

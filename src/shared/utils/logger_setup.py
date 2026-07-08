@@ -27,7 +27,7 @@ class FederatedContextFilter(logging.Filter):
 
 
 def setup_logger(node_id: str):
-    log_base_dir = os.path.join(os.getcwd(), "logs", "nodes")
+    log_base_dir = os.path.join(os.getcwd(), "logs")
     os.makedirs(log_base_dir, exist_ok=True)
     log_file = os.path.join(log_base_dir, f"{node_id.replace('[', '').replace(']', '').replace(' ', '_').lower()}.jsonl")
 

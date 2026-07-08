@@ -1,12 +1,12 @@
 # Experiment
 run_name: ""                            # String identifier for output JSON logs (blank = auto timestamp)
-strategy: "zta"                         # Aggregation algorithm (zta, ztafl, fedavg, fedprox, krum, trimmed_mean, flame, fltrust)
+strategy: "zta"                         # Aggregation algorithm (zta, ztafl, fedavg, fedprox, krum, trimmed_mean, flame, fltrust, advfl, rfa)
 num_rounds: 3                           # Total number of global federated communication rounds
 
 # Dataset
 dataset: "edge_iiotset"                 # Target dataset identifier mapped in data_loader.py
 dataset_path: "data/edge_iiotset/raw/network_traffic_samples.csv" # Relative path to the raw dataset file
-dataset_fraction: 1.0                  # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
+dataset_fraction: 1.0                   # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
 apply_smote: true                       # Set to true to generate synthetic minority data during training
 
 # Model

@@ -56,7 +56,7 @@ The full Edge-IIoTset corpus is hosted on IEEE DataPort:
 
 After download, place the CSV at `raw/network_traffic_samples.csv` (or
 update the path passed to `load_edge_iiotset(...)`).  The loader in
-`src/utils/data_loader.py` documents the expected column layout.
+`src/shared/data/data_loader.py` documents the expected column layout.
 
 ## Feature Extraction
 

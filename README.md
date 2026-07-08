@@ -141,11 +141,11 @@ Key sections you can modify:
 * **Topology (`configs/network.yaml`):** Scale the network by adjusting `num_fogs` and `uniform_edges_per_fog`. You can even dictate custom distributions using `custom_fog_topology`.
 * **Strategy (`configs/training.yaml`):** Change the aggregation strategy by editing the `strategy` variable (e.g., `"zta"`, `"fedavg"`, `"krum"`, `"trimmed_mean"`).
 * **Data Dynamics (`configs/training.yaml`):** Control non-IID data distribution using `n_classes_per` (label skew) and `power_law_a` (quantity skew). 
-* **Threat Model (`configs/security.yaml`):** Introduce malicious agents seamlessly by adjusting the ratios under the `MULTI-VECTOR THREAT MODEL` section:
+* **Threat Model (`configs/security.yaml`):** Introduce malicious agents by adjusting the ratios under the `THREAT MODEL` section:
   * `label_flip_ratio = 0.2` (Turns 20% of edges into label-flippers)
   * `grad_manip_ratio = 0.1`
   * `backdoor_ratio = 0.0`
-  * `pgd_ratio = 0.1`
+  * `shap_aware_ratio = 0.1`
 
 > **Note:** Performance varies depending on your hardware specifications and the total number of nodes in the network.
 
@@ -201,13 +201,13 @@ The terminal displays the architecture map and then holds the process. The flow 
 
 ```bash
 # Watch the Cloud (Global convergence)
-tail -f logs/nodes/cloud_server.jsonl
+tail -f logs/nodes/cloud/cloud_server.jsonl
 
 # Watch a specific Fog (Local aggregation & Security filtering)
-tail -f logs/nodes/fog_1_server.jsonl
+tail -f logs/nodes/fog_1/fog_1_server.jsonl
 
 # Watch an Edge Node (Local training & TPM Attestation)
-tail -f logs/nodes/edge1_1.jsonl
+tail -f logs/nodes/edge_1_1/edge_1_1.jsonl
 ```
 Otherwise, you can watch the pipeline update live using the following command:
 
