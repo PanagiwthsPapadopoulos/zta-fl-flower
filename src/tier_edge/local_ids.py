@@ -37,7 +37,7 @@ class EdgeTrainer:
             state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
             self.model.load_state_dict(state_dict, strict=True)
 
-    def execute_training(self, parameters: list, current_round: int, strategy: str, config: dict):
+    def execute_training(self, parameters: list, current_round: int, config: dict):
         """Executes the core training loop, managing epochs and adversarial logic."""
         self.set_parameters(parameters)
         
@@ -56,7 +56,7 @@ class EdgeTrainer:
         # Start the training for each role
         loss = 0.0
         for epoch in range(epochs):
-            loss = self._train_based_on_role(role, lr, current_round, active_loader, strategy, global_model)
+            loss = self._train_based_on_role(role, lr, current_round, active_loader, global_model)
             self.logger.info(f"{self.log_prefix} Epoch {epoch + 1}/{epochs} complete. Loss: {loss:.4f}", extra={"round": current_round})
         
         metadata = {
@@ -66,16 +66,15 @@ class EdgeTrainer:
         }
 
         # Generate TPM token
-        if strategy in ["zta", "ztafl"]:
-            from src.tier_edge.tpm_attestation import TPMAttestation
-            tpm_engine = TPMAttestation(logger=self.logger)
-            nonce = config.get("nonce", f"round_{current_round}_default")
-            tpm_token = tpm_engine.generate_attestation_token(nonce=nonce, software_label=self.log_prefix, round_num=current_round)
-            metadata["tpm_token_json"] = json.dumps(tpm_token)
+        from src.tier_edge.tpm_attestation import TPMAttestation
+        tpm_engine = TPMAttestation(logger=self.logger)
+        nonce = config.get("nonce", f"round_{current_round}_default")
+        tpm_token = tpm_engine.generate_attestation_token(nonce=nonce, software_label=self.log_prefix, round_num=current_round)
+        metadata["tpm_token_json"] = json.dumps(tpm_token)
             
         return self.get_parameters(), len(self.train_loader.dataset), metadata
 
-    def _train_based_on_role(self, role: str, lr: float, current_round: int, active_loader: DataLoader, strategy: str, global_model: torch.nn.Module):
+    def _train_based_on_role(self, role: str, lr: float, current_round: int, active_loader: DataLoader, global_model: torch.nn.Module):
         """Executes the specific PyTorch optimization loop variant strictly dictated by the node's assigned profile role."""
         clip_norm = float(self.train_config.get("clip_norm", 1.0))
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
@@ -119,7 +118,7 @@ class EdgeTrainer:
             self.logger.info(f"{self.log_prefix} Backdoor attack detected! Dataset already poisoned, performing honest training!", extra={"round": current_round})
             return local_train_honest(model=self.model, loader=active_loader, device=self.device, lr=lr, clip_norm=clip_norm)
             
-        # Benign node, Check strategy first
+        # Benign node
         elif role in ["benign"]:
             adv_ratio = float(self.train_config.get("adv_ratio", 0.0))
             eps = float(self.train_config.get("eps", 0.1))
@@ -127,27 +126,7 @@ class EdgeTrainer:
             n_iter = int(self.train_config.get("n_iter", 7))
             clip_min = float(self.train_config.get("clip_min", 0.0))
             clip_max = float(self.train_config.get("clip_max", 1.0))
-            use_pgd = bool(self.train_config.get("robustness_eval_attack", "pgd") == "pgd" )
-
-            # Check strategy before training. Strategies "FedAvg", "Krum", "Trimmed Mean",
-            # "FLAME", "FlTrust" DO NOT use adversarial training
-            if strategy in ["fedavg", "krum", "trimmed_mean", "flame", "fltrust", "rfa"]:
-                self.logger.info(f"{self.log_prefix} Strategy {strategy} detected! Executing honest training with learning rate: {lr} and clip_norm: {clip_norm}.", extra={"round": current_round})
-                return local_train_honest(model=self.model, loader=active_loader, device=self.device, lr=lr, clip_norm=clip_norm)
-
-            # If strategy is "FedProx", use special training with L2 proximal term
-            elif strategy in ["fedprox"]:
-                mu = float(self.train_config.get("fedprox_mu", 0.01))
-                self.logger.info(f"{self.log_prefix} Strategy {strategy} detected! Executing FedProx training with learning rate: {lr}, clip_norm: {clip_norm} and mu: {mu}.", extra={"round": current_round})
-                return local_train_proximal(
-                    model=self.model, global_model=global_model, loader=active_loader, device=self.device, lr=lr, clip_norm=clip_norm, mu=mu
-                )
-
-            # Invalid strategy selected, execute honest training
-            elif strategy not in ["zta", "ztafl"]:
-                self.logger.info(f"{self.log_prefix} Invalid Strategy {strategy} detected! Executing honest training with learning rate: {lr} and clip_norm: {clip_norm}.", extra={"round": current_round})
-                return local_train_honest(model=self.model, loader=active_loader, device=self.device, lr=lr, clip_norm=clip_norm)
-
+            use_pgd = bool(self.train_config.get("robustness_eval_attack", "pgd") == "pgd")
 
             # Check ratio of adversarial examples. If <= 0, just execute honest training
             if adv_ratio > 0:

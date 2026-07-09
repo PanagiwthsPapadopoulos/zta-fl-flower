@@ -23,4 +23,4 @@ fog_ipc_base: 9500                      # Base port for the custom ZTA-FL Socket
 edge_client_io_base: 10000              # Base port for Edge Client Node connections (Supports 99 edges per fog)
 
 # Communication
-quantization_bits: 16                   # Bit-width for dynamic payload compression (8=INT8, 16=FP16, 32=FP32/Disabled)
+quantization_bits: 32                   # Bit-width for dynamic payload compression (8=INT8, 16=FP16, 32=FP32/Disabled)

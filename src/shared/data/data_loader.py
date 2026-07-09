@@ -167,7 +167,7 @@ def load_unsw_nb15(path: str, label_col: str = "attack_cat") -> Tuple[np.ndarray
 
 def get_dataset(
     dataset_name: str, dataset_path: str, num_classes: int, random_seed: int,
-    simulate_global_leakage: bool = False, apply_smote: bool = False, split: str = "train",
+    simulate_global_leakage: bool = False, apply_smote: bool = True, split: str = "train",
     test_split: float = 0.30, val_split: float = 0.50   
 ):
     global _MASTER_DATA_CACHE

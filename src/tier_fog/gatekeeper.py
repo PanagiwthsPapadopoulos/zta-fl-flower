@@ -44,13 +44,13 @@ class ZeroTrustGatekeeper:
         edge_folder = untrusted_log_prefix.lower().replace('[', '').replace(']', '').replace(' ', '_')
         return os.path.join(self.tpm_state_root, edge_folder)
 
-    def filter_node_updates(self, tier: str, strategy_name: str, server_round: int, results: list, active_nonces: dict) -> list:
+    def filter_node_updates(self, tier: str, server_round: int, results: list, active_nonces: dict) -> list:
         """Filters incoming client model updates based on real-time cryptographic attestation and ledger verification."""
         trusted_results = []
         current_ledger = self.get_live_ledger()
         
         for client_proxy, fit_res in results:
-            if tier == "cloud" or strategy_name not in ["zta", "ztafl"]:
+            if tier == "cloud":
                 if fit_res.num_examples > 0:
                     trusted_results.append((client_proxy, fit_res))
                 continue

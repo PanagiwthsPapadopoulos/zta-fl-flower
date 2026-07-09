@@ -6,7 +6,6 @@ def generate_random_toml():
     Constructs an abstract structural file utilizing varied random elements generating valid execution definitions.
     Generates experimental permutations encompassing diverse hyperparameter arrays simulating disparate node activity limits.
     """
-    strategies = ["zta", "fedavg", "fedprox", "krum", "trimmed_mean", "flame", "fltrust"]
     datasets = ["edge_iiotset", "cic_ids2017", "unsw_nb15"]
     
     num_fogs = random.randint(2, 4)
@@ -40,7 +39,6 @@ clientapp = "src.federation.client:app"
 # ==============================================================================
 # --- 1. CORE EXPERIMENT & TOPOLOGY ---
 # ==============================================================================
-strategy = "{random.choice(strategies)}"
 tier = "cloud" 
 fog_id = "fog_0" 
 dataset = "{random.choice(datasets)}"

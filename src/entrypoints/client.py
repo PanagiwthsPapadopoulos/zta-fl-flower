@@ -76,7 +76,6 @@ class Client(NumPyClient):
         """Executes the local training round and returns the sequentially updated, optionally corrupted, network parameters."""
         try:
             current_round = config.get("server_round", 0)
-            strategy = config.get("strategy", "fedavg")
             
             if self.node_type == "fog_client":
                 from src.tier_edge.fog_bridge_client import FogBridgeClient
@@ -85,7 +84,7 @@ class Client(NumPyClient):
             elif self.node_type == "edge":                
                 self.adversary_manager.current_round = current_round
                 
-                res_params, num_examples, metrics = self.trainer.execute_training(parameters, current_round, strategy, config)
+                res_params, num_examples, metrics = self.trainer.execute_training(parameters, current_round, config)
                 
                 metrics["log_prefix"] = self.log_prefix
                 res_params, metrics = self.adversary_manager.corrupt_payload_if_needed(res_params, metrics)
@@ -127,7 +126,6 @@ def client_fn(context: Context):
     dataset_metadata = None
     train_config = None
 
-    strategy = str(run_config.get("strategy", "zta"))
     dataset_name = str(run_config.get("dataset", "edge_iiotset")).lower()
     
     if dataset_name not in DATASET_METADATA:
@@ -191,7 +189,6 @@ def client_fn(context: Context):
                 "clip_min": float(run_config.get("clip_min", 0.0)),
                 "clip_max": float(run_config.get("clip_max", 1.0)),
                 "clip_norm": float(run_config.get("clip_norm", 1.0)),
-                "fedprox_mu": float(run_config.get("fedprox_mu", 0.01)),
                 "shap_threshold": float(run_config.get("shap_threshold", 0.15)),
                 "shap_aware_base_attack": str(run_config.get("shap_aware_base_attack", "label_flip")),
                 "robustness_eval_attack": str(run_config.get("robustness_eval_attack", "pgd")),

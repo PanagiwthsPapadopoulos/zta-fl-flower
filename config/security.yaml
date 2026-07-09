@@ -28,14 +28,10 @@ backdoor_trigger_value: 1.5           # The numerical magnitude injected into th
 shap_threshold: 0.5                   # Minimum SHAP stability score (s_i) required to pass the Byzantine filter
 shap_val_samples: 100                 # Exact number of samples the Fog uses to evaluate incoming local updates
 shap_explain_count: 10                # Number of background samples used for Integrated Gradients baseline approximation
-# Baselines
-krum_f: 1                             # (Krum) Expected integer count of Byzantine attackers to bypass during Euclidean selection
-trimmed_mean_beta: 0.1                # (Trimmed Mean) Fraction of extreme weights to discard from top and bottom (0.1 = trim 10%)
-flame_target_frac: 0.5                # (FLAME) Minimum proportion of updates guaranteed to be kept regardless of clustering
 
 # Robustness
 # Honest Mode
-benign_adv_ratio: 0.3                 # Percentage of an honest node's training batch replaced with adversarial examples for robustness
+benign_adv_ratio: 0.0                 # Percentage of an honest node's training batch replaced with adversarial examples for robustness
 benign_eps: 0.05                      # Epsilon budget strictly for the honest robustness training
 benign_alpha: 0.2                     # Step size strictly for the honest robustness training
 benign_n_iter: 3                      # Iterations strictly for the honest robustness training

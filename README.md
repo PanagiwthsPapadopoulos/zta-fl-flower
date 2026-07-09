@@ -139,7 +139,6 @@ The entire behavior of the distributed network, machine learning models, and thr
 Key sections you can modify:
 
 * **Topology (`configs/network.yaml`):** Scale the network by adjusting `num_fogs` and `uniform_edges_per_fog`. You can even dictate custom distributions using `custom_fog_topology`.
-* **Strategy (`configs/training.yaml`):** Change the aggregation strategy by editing the `strategy` variable (e.g., `"zta"`, `"fedavg"`, `"krum"`, `"trimmed_mean"`).
 * **Data Dynamics (`configs/training.yaml`):** Control non-IID data distribution using `n_classes_per` (label skew) and `power_law_a` (quantity skew). 
 * **Threat Model (`configs/security.yaml`):** Introduce malicious agents by adjusting the ratios under the `THREAT MODEL` section:
   * `label_flip_ratio = 0.2` (Turns 20% of edges into label-flippers)

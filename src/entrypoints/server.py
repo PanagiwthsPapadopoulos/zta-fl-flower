@@ -27,7 +27,6 @@ def _build_run_metadata(run_config: dict) -> dict:
 
     return {
         "experiment_name": experiment_name,
-        "strategy": str(run_config.get("strategy", "zta")),
         "timestamp": datetime.now().isoformat(),
         "dataset": str(run_config.get("dataset", "edge_iiotset")),
         "dataset_fraction": float(run_config.get("dataset_fraction", 1.0)),
@@ -41,26 +40,17 @@ def _build_run_metadata(run_config: dict) -> dict:
         "shap_threshold": float(run_config.get("shap_threshold", 0.5)),
         "shap_val_samples": int(run_config.get("shap_val_samples", 100)),
         "shap_explain_count": int(run_config.get("shap_explain_count", 10)),
-        "pgd_ratio": float(run_config.get("pgd_ratio", 0.0)),
-        "fgsm_ratio": float(run_config.get("fgsm_ratio", 0.0)),
         "backdoor_ratio": float(run_config.get("backdoor_ratio", 0.0)),
-        "pgd_adv_ratio": float(run_config.get("pgd_adv_ratio", 0.3)),
-        "pgd_eps": float(run_config.get("pgd_eps", 0.1)),
-        "pgd_alpha": float(run_config.get("pgd_alpha", 0.01)),
-        "pgd_n_iter": int(run_config.get("pgd_n_iter", 7)),
-        "fgsm_adv_ratio": float(run_config.get("fgsm_adv_ratio", 0.5)),
-        "fgsm_eps": float(run_config.get("fgsm_eps", 0.2)),
-        "fgsm_alpha": float(run_config.get("fgsm_alpha", 0.02)),
         "backdoor_poison_fraction": float(run_config.get("backdoor_poison_fraction", 0.5)),
         "backdoor_target_class": int(run_config.get("backdoor_target_class", 0)),
         "backdoor_trigger_features": str(run_config.get("backdoor_trigger_features", "[-3, -2, -1]")),
         "backdoor_trigger_value": float(run_config.get("backdoor_trigger_value", 1.5)),
         "benign_adv_ratio": float(run_config.get("benign_adv_ratio", 0.3)),
+        "benign_eps": float(run_config.get("benign_eps", 0.05)),
+        "benign_alpha": float(run_config.get("benign_alpha", 0.2)),
+        "benign_n_iter": float(run_config.get("benign_n_iter", 3)),
         "rollback_threshold": float(run_config.get("rollback_threshold", 0.80)),
         "quantization_bits": int(run_config.get("quantization_bits", 32)),
-        "krum_f": int(run_config.get("krum_f", 1)),
-        "trimmed_mean_beta": float(run_config.get("trimmed_mean_beta", 0.1)),
-        "flame_target_frac": float(run_config.get("flame_target_frac", 0.5)),
         "robustness_eval_attack": str(run_config.get("robustness_eval_attack", "pgd")),
         "clip_min": float(run_config.get("clip_min", 0.0)),
         "clip_max": float(run_config.get("clip_max", 1.0)),
@@ -70,7 +60,7 @@ def _build_run_metadata(run_config: dict) -> dict:
 
 
 def server_fn(context: Context) -> ServerAppComponents:
-    """Spins up the core server process parsing configurations and arming the selected federation strategy."""
+    """Spins up the core server process parsing configurations."""
     from src.shared.utils.config_loader import get_merged_config
     run_config = get_merged_config(context.run_config)
     
@@ -84,14 +74,7 @@ def server_fn(context: Context) -> ServerAppComponents:
     logger = setup_logger(log_prefix)
     
     logger.info("Starting up... Expecting clients.")
-
-    SUPPORTED_STRATEGIES = ["zta", "ztafl", "fedavg", "fedprox", "krum", "trimmed_mean", "flame", "fltrust"]  
-    if run_metadata["strategy"].lower() not in SUPPORTED_STRATEGIES:
-        logger.error(f"{log_prefix} ❌ Unknown strategy '{run_metadata['strategy']}'. Defaulting to 'zta'.")
-        run_metadata["strategy"] = "zta"
         
-    logger.info(f"{log_prefix} ⚔️ ACTIVE AGGREGATION STRATEGY: {run_metadata['strategy'].upper()}")
-
     dataset_path = str(run_config.get("dataset_path", "data/edge_iiotset/raw/network_traffic_samples.csv"))
     broker_ip = str(run_config.get("broker_ip", "127.0.0.1"))
     fog_ipc_base = int(run_config.get("fog_ipc_base", 10000))
@@ -107,36 +90,25 @@ def server_fn(context: Context) -> ServerAppComponents:
     
     if tier == "fog":
         try:
-            logger.debug(f"[CONFIG USAGE] get_dataset | dataset: {run_metadata['dataset']}, dataset_path: {dataset_path}, num_classes: {num_classes}, dataset_fraction: {run_metadata['dataset_fraction']}, shap_val_samples: {run_metadata['shap_val_samples']}")            
-            
             simulate_global_leakage = run_config.get("simulate_global_leakage", False)
 
+            # Fetch shuffled and prepared data
             dataset_returns = get_dataset(run_metadata["dataset"], dataset_path, num_classes, random_seed, simulate_global_leakage, False, "val", test_split, val_split)
             
             X_full = dataset_returns[0]
             y_full = dataset_returns[1]
-            
-            if len(dataset_returns) > 3:
-                server_scaler = dataset_returns[3]
-                server_pca = dataset_returns[4]
-                
-                X_full_np = X_full.numpy() if isinstance(X_full, torch.Tensor) else X_full
-                X_full_np = server_scaler.transform(X_full_np)
-                X_full_np = server_pca.transform(X_full_np)
-                X_full = torch.tensor(X_full_np, dtype=torch.float32)
-            
-            # Shuffle first to guarantee class distribution for SHAP baseline
-            generator = torch.Generator().manual_seed(random_seed)
-            indices = torch.randperm(len(X_full), generator=generator)
-            X_full = X_full[indices]
-            y_full = y_full[indices]
 
+            # Keep a fraction of the dataset
             if run_metadata["dataset_fraction"] < 1.0:
+                # Have a hard floor of shap_val_samples, in order to perform the shap calculations accurately
                 subset_size = max(run_metadata["shap_val_samples"], int(len(X_full) * run_metadata["dataset_fraction"]))
                 X_full = X_full[:subset_size]
                 y_full = y_full[:subset_size]
 
+            # Build the evaluation subset
             val_data = (X_full[:run_metadata["shap_val_samples"]], y_full[:run_metadata["shap_val_samples"]])
+            
+            # Extract the feature count
             n_features = X_full.shape[1]
         except FileNotFoundError:
             logger.warning(f"Dataset not found at {dataset_path}. SHAP checks will be bypassed.")
@@ -155,8 +127,6 @@ def server_fn(context: Context) -> ServerAppComponents:
         logger=logger
     )
     evaluate_fn = evaluator.evaluate
-
-    logger.info(f"[CONFIG USAGE] Strategy | num_classes: {num_classes}, shap_explain_count: {run_metadata['shap_explain_count']}, tier: {tier}, fog_num: {fog_num}, n_features: {n_features}, shap_threshold: {run_metadata['shap_threshold']}, min_clients: {run_metadata['min_clients']}, strategy: {run_metadata['strategy']}, model_architecture: {run_metadata['model_architecture']}, rollback_threshold: {run_metadata['rollback_threshold']}")
     
     if tier == "cloud":
         from src.tier_cloud.cloud_aggregator import CloudAggregator
@@ -177,7 +147,6 @@ def server_fn(context: Context) -> ServerAppComponents:
             min_fit_clients=run_metadata["min_clients"],
             min_evaluate_clients=run_metadata["min_clients"],
             on_fit_config_fn=fit_config,
-            strategy=run_metadata["strategy"],
             evaluate_fn=evaluate_fn,
             run_metadata=run_metadata,
             model_architecture=run_metadata["model_architecture"]
@@ -201,7 +170,6 @@ def server_fn(context: Context) -> ServerAppComponents:
             min_fit_clients=run_metadata["min_clients"],
             min_evaluate_clients=run_metadata["min_clients"],
             on_fit_config_fn=fit_config,
-            strategy=run_metadata["strategy"],
             evaluate_fn=evaluate_fn,
             run_metadata=run_metadata,
             model_architecture=run_metadata["model_architecture"]

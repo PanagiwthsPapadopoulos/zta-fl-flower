@@ -27,7 +27,7 @@ done
 # 2. LOG ROTATION & TOPOLOGY ANALYSIS
 # =========================================================
 mkdir -p "$LOG_DIR/system"
-rm -f "$LOG_DIR"/nodes/* 2>/dev/null
+find "$LOG_DIR/nodes/" -type f -delete 2>/dev/null
 rm -f "$LOG_DIR"/system/run_*.log 2>/dev/null
 echo "✅ Execution environment refreshed."
 
