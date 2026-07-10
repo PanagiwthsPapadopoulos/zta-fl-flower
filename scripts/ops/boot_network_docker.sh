@@ -415,8 +415,19 @@ PIDS+=($!)
 echo "================================================="
 echo " 🛡️  FACTORY PROVISIONING (COLLECTING STATES)     "
 echo "================================================="
-echo "⏳ Waiting 5 seconds for container TPM boot sequences to complete..."
-sleep 5
+
+# Calculate total number of edges
+TOTAL_EDGES=0
+for nodes in "${EDGES_PER_FOG_ARRAY[@]}"; do
+    TOTAL_EDGES=$((TOTAL_EDGES + nodes))
+done
+
+# Calculate the total wait time
+WAIT_TIME=$((TOTAL_EDGES * 2))
+
+# Wait a proportionate amount of time
+echo "⏳ Waiting ${WAIT_TIME} seconds for container TPM boot sequences to complete..."
+sleep "${WAIT_TIME}"
 
 # Export the project root so the Python script knows where to look
 export PROJECT_ROOT="$PROJECT_ROOT"

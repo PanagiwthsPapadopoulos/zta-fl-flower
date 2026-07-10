@@ -35,29 +35,36 @@ cd "$PROJECT_ROOT" || exit 1
 
 CONFIG_VARS=$(python3 - <<EOF
 import re, ast
+
+def get_yaml_val(filepath, key, default):
+    """Safely extracts YAML values using regex to avoid external host OS dependencies."""
+    try:
+        with open(filepath, 'r') as f:
+            content = f.read()
+        m = re.search(fr'^{key}:\s*(.+)$', content, re.MULTILINE)
+        if m:
+            return m.group(1).split('#')[0].strip().strip('"').strip("'")
+    except:
+        pass
+    return default
+
+net_conf = 'config/network.yaml'
+
 try:
-    with open('pyproject.toml', 'r') as f: content = f.read()
-    
-    def get_val(key, default):
-        m = re.search(fr'{key}\s*=\s*(["0-9\.]+)', content)
-        return m.group(1).replace('"', '') if m else default
+    print(f"CLOUD_CTRL={get_yaml_val(net_conf, 'cloud_ctrl_port', '9003')}")
+    print(f"FOG_CTRL_BASE={get_yaml_val(net_conf, 'fog_ctrl_base', '9300')}")
 
-    print(f"CLOUD_CTRL={get_val('cloud_ctrl_port', '9093')}")
-    print(f"FOG_CTRL_BASE={get_val('fog_ctrl_base', '9390')}")
-
-    m_fogs = re.search(r'num_fogs\s*=\s*(\d+)', content)
-    num_fogs = int(m_fogs.group(1)) if m_fogs else 2
+    num_fogs = int(get_yaml_val(net_conf, 'num_fogs', '2'))
+    uniform = int(get_yaml_val(net_conf, 'uniform_edges_per_fog', '2'))
     
-    m_uni = re.search(r'uniform_edges_per_fog\s*=\s*(\d+)', content)
-    uniform = int(m_uni.group(1)) if m_uni else 2
-    
-    c_match = re.search(r'custom_fog_topology\s*=\s*"(\[.*?\])"', content)
-    custom_top = ast.literal_eval(c_match.group(1)) if c_match else []
+    custom_top_str = get_yaml_val(net_conf, 'custom_fog_topology', '[]')
+    custom_top = ast.literal_eval(custom_top_str) if custom_top_str else []
     
     edges_arr = custom_top[:num_fogs] if custom_top and len(custom_top) >= num_fogs else [uniform] * num_fogs
+    
     print(f"NUM_FOGS={num_fogs}")
     print(f"EDGES_PER_FOG_ARRAY=({' '.join(map(str, edges_arr))})")
-except:
+except Exception as e:
     pass
 EOF
 )

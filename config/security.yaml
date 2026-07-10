@@ -25,7 +25,7 @@ backdoor_trigger_value: 1.5           # The numerical magnitude injected into th
 
 # Defenses
 # ZTA-FL
-shap_threshold: 0.5                   # Minimum SHAP stability score (s_i) required to pass the Byzantine filter
+shap_threshold: 0.6                   # Minimum SHAP stability score (s_i) required to pass the Byzantine filter
 shap_val_samples: 100                 # Exact number of samples the Fog uses to evaluate incoming local updates
 shap_explain_count: 10                # Number of background samples used for Integrated Gradients baseline approximation
 

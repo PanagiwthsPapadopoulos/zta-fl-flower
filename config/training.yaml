@@ -1,6 +1,6 @@
 # Experiment
 run_name: ""                            # String identifier for output JSON logs (blank = auto timestamp)
-num_rounds: 3                           # Total number of global federated communication rounds
+num_rounds: 20                           # Total number of global federated communication rounds
 
 # Dataset
 dataset: "edge_iiotset"                 # Target dataset identifier mapped in data_loader.py
@@ -10,14 +10,14 @@ apply_smote: true                       # Set to true to generate synthetic mino
 
 # Model
 model_architecture: "cnnlstm"           # Target neural network class mapped in cnn_lstm.py
-learning_rate: 0.01                    # Optimizer step size during local training
-batch_size: 32                          # Number of samples processed before updating local weights
-local_epochs: 2                         # Number of full local dataset passes per federated round
+learning_rate: 0.001                    # Optimizer step size during local training
+batch_size: 128                          # Number of samples processed before updating local weights
+local_epochs: 5                         # Number of full local dataset passes per federated round
 random_seed: 42                         # Master seed for dataset shuffling, partition logic, and role assignment
 
 # Skew
 n_classes_per: 3                        # Label Skew: Number of distinct traffic classes each edge agent is allowed to see
-power_law_a: 1.0                        # Quantity Skew: Shape of dataset size distribution (0.4 = long tail/heavy skew, 1.0 = uniform)
+power_law_a: 0.4                        # Quantity Skew: Shape of dataset size distribution (0.4 = long tail/heavy skew, 1.0 = uniform)
 
 # Normalization
 clip_min: 0.0                           # Lower mathematical bound of scaled features (used to constrain adversarial attacks)
