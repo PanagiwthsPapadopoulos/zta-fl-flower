@@ -1,7 +1,7 @@
 # Experiment
 run_name: ""                            # String identifier for output JSON logs (blank = auto timestamp)
 num_rounds: 2                          # Total number of global federated communication rounds
-snapshot_rounds: [12, 3, 0]                     # List with round numbers where the global model weights are saved. Insert 0 to save round 0 weights. Last round weights are always saved.
+snapshot_rounds: []                     # List with round numbers where the global model weights are saved. Insert 0 to save round 0 weights. Last round weights are always saved.
 snapshot_interval: 120                   # Interval between rounds where the global model weights are saved. Does not apply for round 0.
 
 # Dataset
