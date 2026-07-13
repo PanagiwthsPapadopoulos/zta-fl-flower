@@ -56,6 +56,8 @@ def _build_run_metadata(run_config: dict) -> dict:
         "clip_max": float(run_config.get("clip_max", 1.0)),
         "simulate_global_leakage": bool(run_config.get("simulate_global_leakage", False)),
         "tpm_freshness_window": int(run_config.get("tpm_freshness_window", 300)),
+        "snapshot_rounds": list(run_config.get("snapshot_rounds", [])),
+        "snapshot_interval": int(run_config.get("snapshot_interval", 9999))
     }
 
 
@@ -113,7 +115,6 @@ def server_fn(context: Context) -> ServerAppComponents:
         except FileNotFoundError:
             logger.warning(f"Dataset not found at {dataset_path}. SHAP checks will be bypassed.")
     
-    logger.debug(f"[CONFIG USAGE] GlobalEvaluator | dataset: {run_metadata['dataset']}, dataset_path: {dataset_path}, num_classes: {num_classes}, n_features: {n_features}, random_seed: {run_metadata['random_seed']}")
     
     evaluator = GlobalEvaluator(
         dataset=run_metadata["dataset"],

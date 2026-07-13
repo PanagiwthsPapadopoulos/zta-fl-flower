@@ -1,6 +1,6 @@
 # Topology
-num_fogs: 4                             # Total number of intermediary Fog nodes operating in the network
-uniform_edges_per_fog: 3                # Forces each Fog to control exactly this many Edge devices
+num_fogs: 1                             # Total number of intermediary Fog nodes operating in the network
+uniform_edges_per_fog: 2                # Forces each Fog to control exactly this many Edge devices
 custom_fog_topology: "[]"               # Array string overriding uniform edges (e.g., "[3, 1]")
 
 # Infrastructure
@@ -23,4 +23,4 @@ fog_ipc_base: 9500                      # Base port for the custom ZTA-FL Socket
 edge_client_io_base: 10000              # Base port for Edge Client Node connections (Supports 99 edges per fog)
 
 # Communication
-quantization_bits: 8                   # Bit-width for dynamic payload compression (8=INT8, 16=FP16, 32=FP32/Disabled)
+quantization_bits: 32                   # Bit-width for dynamic payload compression (8=INT8, 16=FP16, 32=FP32/Disabled)

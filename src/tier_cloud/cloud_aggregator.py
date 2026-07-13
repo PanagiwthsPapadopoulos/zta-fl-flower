@@ -59,6 +59,8 @@ class CloudAggregator(FedAvg):
 
         self.run_metadata = run_metadata or {}
         self.experiment_name = self.run_metadata.get("experiment_name", "default_run")
+        self.snapshot_rounds = self.run_metadata.get("snapshot_rounds", [])
+        self.snapshot_interval = self.run_metadata.get("snapshot_interval", 9999)
         self.results_dict = {
             "metadata": self.run_metadata,
             "performance": []
@@ -161,6 +163,8 @@ class CloudAggregator(FedAvg):
         Serializes the training history into a JSON payload and saves the master 
         PyTorch weights (.pt) to the experiment directory.
         """
+
+        self.logger.info(f"{self.log_prefix}: Calling Cloud Evaluate! Saving model weights every {self.snapshot_interval} rounds and specifically at rounds: {self.snapshot_rounds}", extra={"round": server_round})
         # Call the built-in testing process
         eval_res = super().evaluate(server_round, parameters)
         
@@ -188,8 +192,14 @@ class CloudAggregator(FedAvg):
             json.dump(self.results_dict, f, indent=4)
 
         # Dump the model weights
-        model_filepath = os.path.join(run_dir, "global_model.pt")
+        model_filepath = os.path.join(run_dir, f"global_model_round.pt")
         torch.save(self.global_model.state_dict(), model_filepath)
+        
+        # Check if current server round number is declared inside snapshot_rounds list and store model weights
+        if server_round in self.snapshot_rounds or (self.snapshot_interval > 0 and server_round % self.snapshot_interval == 0 and server_round != 0):
+            model_filepath = os.path.join(run_dir, f"global_model_round_{server_round}.pt")
+            torch.save(self.global_model.state_dict(), model_filepath)
+
         self.logger.info(f"{self.log_prefix} 💾 Saved metrics and model to {run_dir}/ with accuracy: {round_data['global_accuracy']}%", extra={"round": server_round})
 
         return loss, metrics

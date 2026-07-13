@@ -1,18 +1,20 @@
 # Experiment
 run_name: ""                            # String identifier for output JSON logs (blank = auto timestamp)
-num_rounds: 20                           # Total number of global federated communication rounds
+num_rounds: 2                          # Total number of global federated communication rounds
+snapshot_rounds: [12, 3, 0]                     # List with round numbers where the global model weights are saved. Insert 0 to save round 0 weights. Last round weights are always saved.
+snapshot_interval: 120                   # Interval between rounds where the global model weights are saved. Does not apply for round 0.
 
 # Dataset
 dataset: "edge_iiotset"                 # Target dataset identifier mapped in data_loader.py
 dataset_path: "data/edge_iiotset/raw/network_traffic_samples.csv" # Relative path to the raw dataset file
-dataset_fraction: 1.00                  # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
+dataset_fraction: 0.01                  # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
 apply_smote: true                       # Set to true to generate synthetic minority data during training
 
 # Model
 model_architecture: "cnnlstm"           # Target neural network class mapped in cnn_lstm.py
 learning_rate: 0.001                    # Optimizer step size during local training
-batch_size: 128                          # Number of samples processed before updating local weights
-local_epochs: 5                         # Number of full local dataset passes per federated round
+batch_size: 64                          # Number of samples processed before updating local weights
+local_epochs: 0                         # Number of full local dataset passes per federated round
 random_seed: 42                         # Master seed for dataset shuffling, partition logic, and role assignment
 
 # Skew
