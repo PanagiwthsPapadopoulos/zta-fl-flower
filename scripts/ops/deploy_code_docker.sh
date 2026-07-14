@@ -33,6 +33,11 @@ echo "✅ Execution environment refreshed."
 
 cd "$PROJECT_ROOT" || exit 1
 
+# We update the file's "modified time" without touching its contents.
+# Git ignores this, but the Docker containers will read this frozen 
+# timestamp to perfectly synchronize their directory names.
+touch config/training.yaml
+
 CONFIG_VARS=$(python3 - <<EOF
 import re, ast
 

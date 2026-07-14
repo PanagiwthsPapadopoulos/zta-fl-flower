@@ -1,5 +1,5 @@
 # Topology
-num_fogs: 1                             # Total number of intermediary Fog nodes operating in the network
+num_fogs: 2                             # Total number of intermediary Fog nodes operating in the network
 uniform_edges_per_fog: 2                # Forces each Fog to control exactly this many Edge devices
 custom_fog_topology: "[]"               # Array string overriding uniform edges (e.g., "[3, 1]")
 

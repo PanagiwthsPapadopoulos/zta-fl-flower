@@ -1,5 +1,6 @@
 import ast
 import os
+import time
 import traceback
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -84,10 +85,18 @@ class Client(NumPyClient):
             elif self.node_type == "edge":                
                 self.adversary_manager.current_round = current_round
                 
+                # Track Local Execution Latency
+                start_time = time.time()
                 res_params, num_examples, metrics = self.trainer.execute_training(parameters, current_round, config)
+                metrics["latency_adv_training_sec"] = time.time() - start_time
                 
                 metrics["log_prefix"] = self.log_prefix
                 res_params, metrics = self.adversary_manager.corrupt_payload_if_needed(res_params, metrics)
+                
+                # Track Dynamic Payload Size
+                payload_size_mb = sum(arr.nbytes for arr in res_params) / (1024 * 1024) if res_params else 0.0
+                metrics["payload_size_mb"] = payload_size_mb
+                
                 return res_params, num_examples, metrics                
         except Exception as e:
             self.logger.error(f"{self.log_prefix} CRITICAL SILENT CRASH: {e}\n{traceback.format_exc()}", extra={"round": current_round})

@@ -144,10 +144,10 @@ fi
 # Global Mount Variables 
 SHARED_DATA_MOUNT="./data"
 SHARED_CONFIG_MOUNT="./config"
+SHARED_RESULTS_MOUNT="./results"
 
 # Cloud Mount Variables
 CLOUD_LOG_MOUNT="./logs/nodes/cloud"
-CLOUD_RESULTS_MOUNT="./results"
 
 cat <<EOF > "$COMPOSE_FILE"
 name: ${COMPOSE_PROJECT_NAME}
@@ -212,7 +212,7 @@ cat <<EOF >> "$COMPOSE_FILE"
     volumes:
       - ${CLOUD_LOG_MOUNT}:/app/logs
       - ${SHARED_DATA_MOUNT}:/app/data
-      - ${CLOUD_RESULTS_MOUNT}:/app/results
+      - ${SHARED_RESULTS_MOUNT}:/app/results
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
 EOF
 
@@ -337,6 +337,7 @@ EOF
       - ${SHARED_DATA_MOUNT}:/app/data:ro
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
       - ./runtime/tpm_state:/app/runtime/tpm_state:rw
+      - ${SHARED_RESULTS_MOUNT}:/app/results
 EOF
 
     if [ "$CURRENT_EDGES" -gt 0 ]; then

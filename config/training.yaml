@@ -14,7 +14,7 @@ apply_smote: true                       # Set to true to generate synthetic mino
 model_architecture: "cnnlstm"           # Target neural network class mapped in cnn_lstm.py
 learning_rate: 0.001                    # Optimizer step size during local training
 batch_size: 64                          # Number of samples processed before updating local weights
-local_epochs: 0                         # Number of full local dataset passes per federated round
+local_epochs: 1                         # Number of full local dataset passes per federated round
 random_seed: 42                         # Master seed for dataset shuffling, partition logic, and role assignment
 
 # Skew

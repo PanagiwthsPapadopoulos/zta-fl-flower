@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import copy
 import traceback
 import logging
@@ -69,6 +70,7 @@ class CloudAggregator(FedAvg):
 
     def configure_fit(self, server_round: int, parameters: list, client_manager: Any) -> list:
         """Configures the next training round and logs the broadcast."""
+        self.round_start_time = time.time()
         self.logger.info(f"{self.log_prefix} Shouting to all FOG clients!", extra={"round": server_round})
         return super().configure_fit(server_round, parameters, client_manager)
 
@@ -172,6 +174,13 @@ class CloudAggregator(FedAvg):
         if eval_res is None:
             return None
 
+        # Calculate End-of-Round Metrics
+        round_latency_total_sec = time.time() - getattr(self, 'round_start_time', time.time())
+        payload_size_mb = 0.0
+        if parameters:
+            ndarrays = parameters_to_ndarrays(parameters)
+            payload_size_mb = sum(arr.nbytes for arr in ndarrays) / (1024 * 1024)
+
         # Unbox the results it it was successful
         loss, metrics = eval_res
         round_data = {
@@ -179,6 +188,8 @@ class CloudAggregator(FedAvg):
             "global_loss": loss,
             "global_accuracy": metrics.get("accuracy"),
             "global_macro_f1": metrics.get("macro_f1"),
+            "round_latency_total_sec": round_latency_total_sec,
+            "payload_size_mb": payload_size_mb,
             "timestamp": datetime.now().isoformat()
         }
 
@@ -192,7 +203,7 @@ class CloudAggregator(FedAvg):
             json.dump(self.results_dict, f, indent=4)
 
         # Dump the model weights
-        model_filepath = os.path.join(run_dir, f"global_model_round.pt")
+        model_filepath = os.path.join(run_dir, f"global_model.pt")
         torch.save(self.global_model.state_dict(), model_filepath)
         
         # Check if current server round number is declared inside snapshot_rounds list and store model weights

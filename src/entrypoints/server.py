@@ -21,9 +21,21 @@ def fit_config(server_round: int) -> dict:
 
 def _build_run_metadata(run_config: dict) -> dict:
     """Extracts and standardizes the entire run_config object into a unified dictionary."""
+    import os
+    from datetime import datetime
+    
     experiment_name = str(run_config.get("run_name", "")).strip()
-    if not experiment_name:
-        experiment_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    
+    # If the YAML config was left blank, fetch the frozen timestamp from the host-mounted file
+    if not experiment_name or experiment_name.lower() in ["none", "null"]:
+        try:
+            # os.path.getmtime guarantees that a node booting 5 minutes late reads the exact 
+            # same millisecond timestamp as the node that booted first.
+            mtime = os.path.getmtime("config/training.yaml")
+            experiment_name = datetime.fromtimestamp(mtime).strftime("run_%Y%m%d_%H%M%S")
+        except Exception:
+            # Absolute fallback if the file is somehow inaccessible
+            experiment_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
     return {
         "experiment_name": experiment_name,

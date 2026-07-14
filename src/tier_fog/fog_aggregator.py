@@ -1,6 +1,10 @@
+import os
+import json
+import time
 import copy
 import logging
 import traceback
+from datetime import datetime
 from collections import OrderedDict
 from typing import Tuple, List, Optional, Any
 
@@ -56,6 +60,13 @@ class FogAggregator(FedAvg):
         self.previous_val_acc = None
         self.run_metadata = run_metadata or {}
         self.active_nonces = {}
+        
+        # Initialize the state history tracker for this specific Fog node
+        self.experiment_name = self.run_metadata.get("experiment_name", "default_run")
+        self.fog_state_history = {
+            "metadata": {"fog_num": self.fog_num, "tier": self.tier},
+            "rounds": {}
+        }
 
         self.gatekeeper = ZeroTrustGatekeeper(logger=self.logger, log_prefix=self.log_prefix, run_metadata=self.run_metadata)
         from src.shared.utils.admin_console import AdminConsole
@@ -114,7 +125,14 @@ class FogAggregator(FedAvg):
 
         # Filter the incoming nodes based on their token validation
         round_display = self.current_bridged_round
+        
+        # Total nodes connected to Fog server
+        attest_start = time.time()
+        total_received_updates = len(results)
         trusted_results = self.gatekeeper.filter_node_updates(self.tier, round_display, results, self.active_nonces)
+        attest_end = time.time()
+        attestation_failures_this_round = total_received_updates - len(trusted_results)
+        latency_attestation_ms = ((attest_end - attest_start) * 1000) / max(1, total_received_updates)
 
         # Alert if no nodes pass the authentication check
         # This only checks the identity of the node, not its behavior
@@ -123,6 +141,14 @@ class FogAggregator(FedAvg):
             self._relay_ipc_fog_bridge(None)
             return None, {}
 
+        # Extract Per-Node Metrics
+        node_training_latencies = {}
+        node_payload_sizes = {}
+        for client_proxy, fit_res in trusted_results:
+            tpm_id = fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}")
+            node_training_latencies[tpm_id] = float(fit_res.metrics.get("latency_adv_training_sec", 0.0))
+            node_payload_sizes[tpm_id] = float(fit_res.metrics.get("payload_size_mb", 0.0))            
+
         # From here and below, all nodes are authenticated 
         self.logger.info(f"{self.log_prefix} Executing SHAP aggregation...", extra={"round": round_display})
 
@@ -130,9 +156,14 @@ class FogAggregator(FedAvg):
         local_models, sizes, trust_weights, tpm_ids, display_names = self._extract_models_from_results(trusted_results)
 
         try:
+            # SHAP timing
+            shap_start = time.time()
+
             # Apply aggregation strategy
-            aggregated_model, saboteurs, rewarded_nodes = self._apply_aggregation_strategy(local_models, sizes, trust_weights, tpm_ids, display_names)
+            aggregated_model, saboteurs, rewarded_nodes, raw_shap_scores = self._apply_aggregation_strategy(local_models, sizes, trust_weights, tpm_ids, display_names) 
             
+            latency_shap_computation_sec = time.time() - shap_start
+
             # Deal with the Saboteur and Rewarded Nodes accordingly
             if self.gatekeeper.trust_db:
                 for tpm_id, display_identity in saboteurs:
@@ -142,6 +173,13 @@ class FogAggregator(FedAvg):
                 for tpm_id, display_identity in rewarded_nodes:
                     self.logger.info(f"{self.log_prefix} SHAP EXCELLENCE: {display_identity} strictly exceeded median stability. Granting behavioral trust reward!", extra={"round": round_display})
                     self.gatekeeper.trust_db.apply_behavioral_reward(node_id=tpm_id, display_name=display_identity, round_num=round_display)
+
+            # Dump the synchronized state after updating the ledger
+            self._dump_fog_state(
+                round_display, attestation_failures_this_round, raw_shap_scores, 
+                latency_attestation_ms, node_training_latencies, 
+                latency_shap_computation_sec, node_payload_sizes
+            )
 
             # Apply rollback if needed
             self._evaluate_rollback_sanity_check(aggregated_model, round_display)
@@ -170,6 +208,75 @@ class FogAggregator(FedAvg):
         # Relay aggregated parameters to fog client
         self._relay_ipc_fog_bridge(aggregated_parameters)
         return aggregated_parameters, aggregated_metrics
+
+    def _dump_fog_state(self, round_num: int, attestation_failures: int, raw_shap_scores: dict, latency_attestation_ms: float, node_training_latencies: dict, latency_shap_computation_sec: float, node_payload_sizes: dict) -> None:
+        """Packages the raw TrustDB ledger, SHAP scores, and system telemetry into 3 isolated JSON artifacts."""
+        trust_db_snapshot = {}
+        
+        # Safely extract the raw ledger state
+        if self.gatekeeper.trust_db:
+            for node_id, state in self.gatekeeper.trust_db._db.items():
+                trust_db_snapshot[node_id] = {
+                    "score": state["score"],
+                    "is_quarantined": state["is_quarantined"],
+                    "recovery_streak": state["recovery_streak"]
+                }
+                
+        # Update the main state history in memory
+        self.fog_state_history["rounds"][round_num] = {
+            "attestation_failures": attestation_failures,
+            "trust_db": trust_db_snapshot,
+            "raw_shap_scores": raw_shap_scores,
+            "latency_attestation_ms": latency_attestation_ms,
+            "node_training_latencies": node_training_latencies,
+            "latency_shap_computation_sec": latency_shap_computation_sec,
+            "node_payload_sizes": node_payload_sizes,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Separate the history into the 3 Architectural Pillars
+        trust_history = {"metadata": self.fog_state_history.get("metadata", {}), "rounds": {}}
+        shap_history = {"metadata": self.fog_state_history.get("metadata", {}), "rounds": {}}
+        perf_history = {"metadata": self.fog_state_history.get("metadata", {}), "rounds": {}}
+
+        for r, data in self.fog_state_history["rounds"].items():
+            trust_history["rounds"][r] = {
+                "attestation_failures": data["attestation_failures"],
+                "trust_db": data["trust_db"],
+                "timestamp": data["timestamp"]
+            }
+            shap_history["rounds"][r] = {
+                "raw_shap_scores": data["raw_shap_scores"],
+                "timestamp": data["timestamp"]
+            }
+            perf_history["rounds"][r] = {
+                "latency_attestation_ms": data["latency_attestation_ms"],
+                "latency_shap_computation_sec": data["latency_shap_computation_sec"],
+                "node_training_latencies": data.get("node_training_latencies", {}),
+                "node_payload_sizes": data.get("node_payload_sizes", {}),
+                "timestamp": data["timestamp"]
+            }
+        
+        # Establish dynamic output directories (The 3 Pillars)
+        trust_dir = f"results/{self.experiment_name}/trustdb"
+        shap_dir = f"results/{self.experiment_name}/shap_scores"
+        perf_dir = f"results/{self.experiment_name}/performance_metrics"
+        
+        os.makedirs(trust_dir, exist_ok=True)
+        os.makedirs(shap_dir, exist_ok=True)
+        os.makedirs(perf_dir, exist_ok=True)
+        
+        # Write isolated state payloads
+        with open(os.path.join(trust_dir, f"fog_{self.fog_num}_state.json"), "w") as f:
+            json.dump(trust_history, f, indent=4)
+            
+        with open(os.path.join(shap_dir, f"fog_{self.fog_num}_state.json"), "w") as f:
+            json.dump(shap_history, f, indent=4)
+
+        with open(os.path.join(perf_dir, f"fog_{self.fog_num}_state.json"), "w") as f:
+            json.dump(perf_history, f, indent=4)
+            
+        self.logger.debug(f"{self.log_prefix} Saved 3-pillar Fog state artifacts for round {round_num}", extra={"round": round_num})
 
     def _extract_models_from_results(self, trusted_results: list) -> Tuple[List[torch.nn.Module], List[int], List[float], List[str], List[str]]:
         """Unpacks, decompresses, and translates client network payloads into native PyTorch models.
@@ -209,7 +316,7 @@ class FogAggregator(FedAvg):
 
         return local_models, sizes, trust_weights, tpm_ids, display_names
 
-    def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float], tpm_ids: List[str], display_names: List[str]) -> Tuple[torch.nn.Module, List[Tuple[str, str]], List[Tuple[str, str]]]:
+    def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float], tpm_ids: List[str], display_names: List[str]) -> Tuple[torch.nn.Module, List[Tuple[str, str]], List[Tuple[str, str]], dict]:
         """Evaluates local models using SHAP validation data and delegates aggregation."""
         # Check if the server has a local validation dataset.
         # THIS IS A CRUCIAL STEP! This aggregation strategy needs
@@ -221,17 +328,20 @@ class FogAggregator(FedAvg):
         X_val, y_val = self.val_data
 
         # Call the aggregation strategy
-        agg_model, regional_trust, passed_flags, reward_flags = shap_weighted_aggregate(
+        agg_model, regional_trust, passed_flags, reward_flags, raw_scores_list = shap_weighted_aggregate(
             local_models=local_models, ref_model=self.global_model,
             X_val=X_val, y_val=y_val, sizes=sizes, n_classes=self.num_classes, n_explain=self.shap_explain_count
         )
         self.current_regional_trust = regional_trust
 
+        # Map the list of raw floats directly back to the TPM IDs 
+        raw_shap_scores = {tpm_ids[i]: float(raw_scores_list[i]) for i in range(len(tpm_ids))}
+
         # Map the returned True/Flase arrays back to the actual hardware IDs and display names
         saboteurs = [(tpm_ids[i], display_names[i]) for i, passed in enumerate(passed_flags) if not passed]
         rewarded_nodes = [(tpm_ids[i], display_names[i]) for i, rewarded in enumerate(reward_flags) if rewarded]
         
-        return agg_model, saboteurs, rewarded_nodes
+        return agg_model, saboteurs, rewarded_nodes, raw_shap_scores
 
     def _evaluate_rollback_sanity_check(self, aggregated_model: torch.nn.Module, round_display: int) -> None:
         """Evaluates the aggregated model and rolls back to a previous state if performance collapses."""

@@ -15,9 +15,9 @@ def shap_weighted_aggregate(
     sizes: List[int],
     n_classes: int = 15,
     n_explain: int = 10,
-) -> Tuple[nn.Module, float, List[bool], List[bool]]: 
+) -> Tuple[nn.Module, float, List[bool], List[bool], List[float]]: 
     """Runs parallel SHAP stability checks to weight and aggregate updates based on structural trust.
-    Returns the aggregated model AND the total regional trust weight for Cloud use.
+    Returns the aggregated model, regional trust, flags, AND the raw SHAP scores for logging.
     """
     # Initialize a list to hold the SHAP stability score (s_i) for each agent's model
     stability_scores: list[float] = [0.0] * len(local_models)
@@ -59,7 +59,7 @@ def shap_weighted_aggregate(
         # Ensure sigma_s is at least 1e-5 to avoid division by zero or overly aggressive filtering
         sigma_s = max(mad * 1.4826, 1e-5)
     else:
-        # Fallback if only one agent is present: set baseline values to prevent filtering
+        # Fallback if only one agent is present
         mu_s = stability_scores[0]
         sigma_s = 0.0
         
@@ -112,7 +112,7 @@ def shap_weighted_aggregate(
     if not surviving_models:
         # Fallback: average the original models without weights 
         # Passed and reward flags still report total failure to TrustDB
-        return federated_averaging(local_models, weights=None), 0.0, passed_flags, reward_flags
+        return federated_averaging(local_models, weights=None), 0.0, passed_flags, reward_flags, stability_scores
 
     # Normalize weights so they sum to 1.0 (standard requirement for Federated Averaging)
     # Prevent division by zero if total_regional_trust is effectively zero
@@ -122,4 +122,4 @@ def shap_weighted_aggregate(
     agg_model = federated_averaging(surviving_models, weights=normalized_weights)
 
     # Return the new Fog-aggregated model, the total regional trust, and TrustDB signals
-    return agg_model, total_regional_trust, passed_flags, reward_flags
+    return agg_model, total_regional_trust, passed_flags, reward_flags, stability_scores
