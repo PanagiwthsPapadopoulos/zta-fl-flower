@@ -60,8 +60,8 @@ class CloudAggregator(FedAvg):
 
         self.run_metadata = run_metadata or {}
         self.experiment_name = self.run_metadata.get("experiment_name", "default_run")
-        self.snapshot_rounds = self.run_metadata.get("snapshot_rounds", [])
-        self.snapshot_interval = self.run_metadata.get("snapshot_interval", 9999)
+        self.snapshot_rounds = self.run_metadata["snapshot_rounds"]
+        self.snapshot_interval = self.run_metadata["snapshot_interval"]
         self.results_dict = {
             "metadata": self.run_metadata,
             "performance": []
@@ -111,7 +111,7 @@ class CloudAggregator(FedAvg):
             self.global_model.load_state_dict(aggregated_model.state_dict())
 
             # Convert into NumPy arrays and compress
-            quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
+            quantization_bits = int(self.run_metadata["quantization_bits"])
             raw_ndarrays = [val.cpu().numpy() for _, val in aggregated_model.state_dict().items()]
             compressed_ndarrays = compress_weights(raw_ndarrays, quantization_bits)
 
@@ -128,7 +128,7 @@ class CloudAggregator(FedAvg):
     def _extract_models_from_results(self, trusted_results: list) -> Tuple[List[torch.nn.Module], List[int], List[float], List[str], List[str]]:
         """Unpacks and decompresses Fog-tier network payloads into native PyTorch models."""
         local_models, sizes, trust_weights, tpm_ids, display_names = [], [], [], [], []
-        quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
+        quantization_bits = int(self.run_metadata["quantization_bits"])
 
         for client_proxy, fit_res in trusted_results:
             # Extract TPM ID and display identity

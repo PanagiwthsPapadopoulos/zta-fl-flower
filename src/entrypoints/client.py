@@ -38,11 +38,11 @@ class Client(NumPyClient):
         self.dataset_metadata = dataset_metadata or {}
         self.train_config = train_config or {}
         
-        self.broker_ip = self.train_config.get("broker_ip", "127.0.0.1")
-        self.socket_timeout = self.train_config.get("socket_timeout", 600.0)
+        self.broker_ip = self.train_config["broker_ip"]
+        self.socket_timeout = self.train_config["socket_timeout"]
         
         if self.node_type == "fog_client":
-            fog_ipc_base = int(self.train_config.get("fog_ipc_base", 10000))
+            fog_ipc_base = int(self.train_config["fog_ipc_base"])
             self.ipc_port = fog_ipc_base + self.fog_num
         elif self.node_type == "edge":
             from src.tier_edge.local_ids import EdgeTrainer
@@ -70,13 +70,13 @@ class Client(NumPyClient):
             return self.trainer.get_parameters()
             
         weights = [val.cpu().numpy() for _, val in self.model.state_dict().items()]
-        bits = int(self.train_config.get("quantization_bits", 32))
+        bits = int(self.train_config["quantization_bits"])
         return compress_weights(weights, bits)
 
     def fit(self, parameters: list, config: dict):
         """Executes the local training round and returns the sequentially updated, optionally corrupted, network parameters."""
         try:
-            current_round = config.get("server_round", 0)
+            current_round = config["server_round"]
             
             if self.node_type == "fog_client":
                 from src.tier_edge.fog_bridge_client import FogBridgeClient
@@ -109,15 +109,16 @@ class Client(NumPyClient):
 
 def _build_fog_client(run_config: dict, node_config: dict):
     """Constructs the configuration, network IPC, and logging environment specifically for a Fog Client node."""
-    raw_fog_val = str(node_config.get("fog_id", "0"))
+    raw_fog_val = str(node_config["fog_id"])
     fog_num = int(''.join(filter(str.isdigit, raw_fog_val))) if any(c.isdigit() for c in raw_fog_val) else 0
     node_type = "fog_client" 
     log_prefix = f"[FOG {fog_num} CLIENT]"
 
     train_config = {
-        "broker_ip": str(run_config.get("broker_ip", "127.0.0.1")),
-        "socket_timeout": float(run_config.get("socket_timeout", 600.0)),
-        "fog_ipc_base": int(run_config.get("fog_ipc_base", 10000))
+        "broker_ip": str(run_config["broker_ip"]),
+        "socket_timeout": float(run_config["socket_timeout"]),
+        "fog_ipc_base": int(run_config["fog_ipc_base"]),
+        "quantization_bits": int(run_config["quantization_bits"])
     }
     
     logger = setup_logger(log_prefix)
@@ -135,19 +136,19 @@ def client_fn(context: Context):
     dataset_metadata = None
     train_config = None
 
-    dataset_name = str(run_config.get("dataset", "edge_iiotset")).lower()
+    dataset_name = str(run_config["dataset"]).lower()
     
     if dataset_name not in DATASET_METADATA:
         raise ValueError(f"Unknown dataset requested: {dataset_name}")
         
-    dataset_path = str(run_config.get("dataset_path", "data/edge_iiotset/raw/network_traffic_samples.csv"))
-    dataset_fraction = float(run_config.get("dataset_fraction", 1.0))
+    dataset_path = str(run_config["dataset_path"])
+    dataset_fraction = float(run_config["dataset_fraction"])
     num_classes = DATASET_METADATA[dataset_name]["classes"]
     n_features = DATASET_METADATA[dataset_name]["features"]
-    model_arch = str(run_config.get("model_architecture", "cnnlstm"))
-    random_seed = int(run_config.get("random_seed", 42))
-    test_split = float(run_config.get("test_split", 0.30))
-    val_split = float(run_config.get("val_split", 0.50))
+    model_arch = str(run_config["model_architecture"])
+    random_seed = int(run_config["random_seed"])
+    test_split = float(run_config["test_split"])
+    val_split = float(run_config["val_split"])
 
     edge_num = 0
     
@@ -156,7 +157,7 @@ def client_fn(context: Context):
         edge_num = partition_id
         internal_id = partition_id - 1 
         
-        raw_fog_val = str(node_config.get("fog_num", "0"))
+        raw_fog_val = str(node_config["fog_num"])
         fog_num = int(''.join(filter(str.isdigit, raw_fog_val))) if any(c.isdigit() for c in raw_fog_val) else 0
         
         node_type = "edge"
@@ -166,11 +167,11 @@ def client_fn(context: Context):
         # Edge Node Logic
         try: 
             # Extract variables
-            custom_top_str = str(run_config.get("custom_fog_topology", "[]"))
+            custom_top_str = str(run_config["custom_fog_topology"])
             custom_topology = ast.literal_eval(custom_top_str) if custom_top_str.strip() else []
-            num_fogs = int(run_config.get("num_fogs", 2))
-            uniform_edges = int(run_config.get("uniform_edges_per_fog", 2))
-            master_seed = int(run_config.get("random_seed", 42))
+            num_fogs = int(run_config["num_fogs"])
+            uniform_edges = int(run_config["uniform_edges_per_fog"])
+            master_seed = int(run_config["random_seed"])
 
             if custom_topology and len(custom_topology) > 0:
                 topology = custom_topology
@@ -187,45 +188,45 @@ def client_fn(context: Context):
                 
             train_config = {
                 "role": role,
-                "learning_rate": float(run_config.get("learning_rate", 0.001)),
-                "quantization_bits": int(run_config.get("quantization_bits", 32)),
-                "broker_ip": str(run_config.get("broker_ip", "127.0.0.1")),
-                "socket_timeout": float(run_config.get("socket_timeout", 600.0)),
-                "fog_ipc_base": int(run_config.get("fog_ipc_base", 10000)),
+                "learning_rate": float(run_config["learning_rate"]),
+                "quantization_bits": int(run_config["quantization_bits"]),
+                "broker_ip": str(run_config["broker_ip"]),
+                "socket_timeout": float(run_config["socket_timeout"]),
+                "fog_ipc_base": int(run_config["fog_ipc_base"]),
                 "n_features": n_features,
                 "num_classes": num_classes,
-                "local_epochs": int(run_config.get("local_epochs", 1)),
-                "clip_min": float(run_config.get("clip_min", 0.0)),
-                "clip_max": float(run_config.get("clip_max", 1.0)),
-                "clip_norm": float(run_config.get("clip_norm", 1.0)),
-                "shap_threshold": float(run_config.get("shap_threshold", 0.15)),
-                "shap_aware_base_attack": str(run_config.get("shap_aware_base_attack", "label_flip")),
-                "robustness_eval_attack": str(run_config.get("robustness_eval_attack", "pgd")),
-                "shap_explain_count": int(run_config.get("shap_explain_count", 15)),
-                "shap_val_samples": int(run_config.get("shap_val_samples", 100)),
+                "local_epochs": int(run_config["local_epochs"]),
+                "clip_min": float(run_config["clip_min"]),
+                "clip_max": float(run_config["clip_max"]),
+                "clip_norm": float(run_config["clip_norm"]),
+                "shap_threshold": float(run_config["shap_threshold"]),
+                "shap_aware_base_attack": str(run_config["shap_aware_base_attack"]),
+                "robustness_eval_attack": str(run_config["robustness_eval_attack"]),
+                "shap_explain_count": int(run_config["shap_explain_count"]),
+                "shap_val_samples": int(run_config["shap_val_samples"]),
             }
             
             # Load BENIGN role variables
             if role == "benign":
-                train_config["adv_ratio"] = float(run_config.get("benign_adv_ratio", 0.3))
-                train_config["eps"] = float(run_config.get("benign_eps", 0.05))
-                train_config["alpha"] = float(run_config.get("benign_alpha", 0.01))
-                train_config["n_iter"] = int(run_config.get("benign_n_iter", 3))
+                train_config["adv_ratio"] = float(run_config["benign_adv_ratio"])
+                train_config["eps"] = float(run_config["benign_eps"])
+                train_config["alpha"] = float(run_config["benign_alpha"])
+                train_config["n_iter"] = int(run_config["benign_n_iter"])
             
             # Load EXTRA roles variables
             if role == "label_flip":
-                train_config["p_flip"] = float(run_config.get("p_flip", 1.0))
+                train_config["p_flip"] = float(run_config["p_flip"])
             if role == "gradient_manip":
-                train_config["alpha"] = float(run_config.get("gradient_alpha", 5.0))
+                train_config["alpha"] = float(run_config["gradient_alpha"])
             if role == "shap_aware":
-                train_config["p_flip"] = float(run_config.get("p_flip", 1.0))
-                train_config["alpha"] = float(run_config.get("gradient_alpha", 5.0))
+                train_config["p_flip"] = float(run_config["p_flip"])
+                train_config["alpha"] = float(run_config["gradient_alpha"])
             
             global GLOBAL_DATA_CACHE
             
-            apply_smote = run_config.get("apply_smote", True)
-            simulate_leakage = run_config.get("simulate_global_leakage", False)
-            n_classes_per = int(run_config.get("n_classes_per", 3))
+            apply_smote = run_config["apply_smote"]
+            simulate_leakage = run_config["simulate_global_leakage"]
+            n_classes_per = int(run_config["n_classes_per"])
 
             cache_key = f"train_{dataset_name}_{dataset_fraction}_{simulate_leakage}_{apply_smote}"
                         
@@ -253,17 +254,17 @@ def client_fn(context: Context):
                 X_full, y_full, n_classes_eval = GLOBAL_DATA_CACHE[cache_key]
 
             # Split the data across the edge devices to simulate real world data traffic from different devices
-            power_law_a = float(run_config.get("power_law_a", 0.4))
+            power_law_a = float(run_config["power_law_a"])
             partitions = non_iid_partition(X=X_full, y=y_full, n_agents=total_edges, n_classes_per=n_classes_per, power_law_a=power_law_a, seed=master_seed)
             X_part, y_part = partitions[global_index % len(partitions)]
             
             # After preparing the dataset, check if the node must perform a backdoor 
             # If so, poison the data
             if role == "backdoor":
-                poison_fraction = float(run_config.get("backdoor_poison_fraction", 0.5))
-                target_class = int(run_config.get("backdoor_target_class", 0))
-                trigger_value = float(run_config.get("backdoor_trigger_value", 1.5))
-                raw_features = run_config.get("backdoor_trigger_features", "[-3, -2, -1]")
+                poison_fraction = float(run_config["backdoor_poison_fraction"])
+                target_class = int(run_config["backdoor_target_class"])
+                trigger_value = float(run_config["backdoor_trigger_value"])
+                raw_features = run_config["backdoor_trigger_features"]
                 
                 trigger_features = ast.literal_eval(raw_features) if isinstance(raw_features, str) else raw_features
                     
@@ -278,7 +279,7 @@ def client_fn(context: Context):
                 X_part = torch.tensor(X_part, dtype=torch.float32)
 
             dataset = TensorDataset(X_part, y_part)
-            batch_size = int(run_config.get("batch_size", 32))
+            batch_size = int(run_config["batch_size"])
             train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
             
             classes_present, counts = torch.unique(y_part, return_counts=True)

@@ -5,7 +5,7 @@ import hashlib
 
 def main():
     # Fetch the root directory dynamically passed from the bash script
-    project_root = os.environ.get("PROJECT_ROOT")
+    project_root = os.environ["PROJECT_ROOT"]
     if not project_root:
         print("🛑 Error: PROJECT_ROOT environment variable not set.")
         return

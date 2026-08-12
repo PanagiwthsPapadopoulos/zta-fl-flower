@@ -24,7 +24,7 @@ def _build_run_metadata(run_config: dict) -> dict:
     import os
     from datetime import datetime
     
-    experiment_name = str(run_config.get("run_name", "")).strip()
+    experiment_name = str(run_config["run_name"]).strip()
     
     # If the YAML config was left blank, fetch the frozen timestamp from the host-mounted file
     if not experiment_name or experiment_name.lower() in ["none", "null"]:
@@ -40,36 +40,36 @@ def _build_run_metadata(run_config: dict) -> dict:
     return {
         "experiment_name": experiment_name,
         "timestamp": datetime.now().isoformat(),
-        "dataset": str(run_config.get("dataset", "edge_iiotset")),
-        "dataset_fraction": float(run_config.get("dataset_fraction", 1.0)),
-        "model_architecture": str(run_config.get("model_architecture", "cnnlstm")),
-        "num_rounds": int(run_config.get("num_rounds", 3)),
+        "dataset": str(run_config["dataset"]),
+        "dataset_fraction": float(run_config["dataset_fraction"]),
+        "model_architecture": str(run_config["model_architecture"]),
+        "num_rounds": int(run_config["num_rounds"]),
         "min_clients": int(run_config.get("min-clients", 1)),
-        "learning_rate": float(run_config.get("learning_rate", 0.001)),
-        "batch_size": int(run_config.get("batch_size", 32)),
-        "random_seed": int(run_config.get("random_seed", 42)),
-        "n_classes_per": int(run_config.get("n_classes_per", 3)),
-        "shap_threshold": float(run_config.get("shap_threshold", 0.5)),
-        "shap_val_samples": int(run_config.get("shap_val_samples", 100)),
-        "shap_explain_count": int(run_config.get("shap_explain_count", 10)),
-        "backdoor_ratio": float(run_config.get("backdoor_ratio", 0.0)),
-        "backdoor_poison_fraction": float(run_config.get("backdoor_poison_fraction", 0.5)),
-        "backdoor_target_class": int(run_config.get("backdoor_target_class", 0)),
-        "backdoor_trigger_features": str(run_config.get("backdoor_trigger_features", "[-3, -2, -1]")),
-        "backdoor_trigger_value": float(run_config.get("backdoor_trigger_value", 1.5)),
-        "benign_adv_ratio": float(run_config.get("benign_adv_ratio", 0.3)),
-        "benign_eps": float(run_config.get("benign_eps", 0.05)),
-        "benign_alpha": float(run_config.get("benign_alpha", 0.2)),
-        "benign_n_iter": float(run_config.get("benign_n_iter", 3)),
-        "rollback_threshold": float(run_config.get("rollback_threshold", 0.80)),
-        "quantization_bits": int(run_config.get("quantization_bits", 32)),
-        "robustness_eval_attack": str(run_config.get("robustness_eval_attack", "pgd")),
-        "clip_min": float(run_config.get("clip_min", 0.0)),
-        "clip_max": float(run_config.get("clip_max", 1.0)),
-        "simulate_global_leakage": bool(run_config.get("simulate_global_leakage", False)),
-        "tpm_freshness_window": int(run_config.get("tpm_freshness_window", 300)),
-        "snapshot_rounds": list(run_config.get("snapshot_rounds", [])),
-        "snapshot_interval": int(run_config.get("snapshot_interval", 9999))
+        "learning_rate": float(run_config["learning_rate"]),
+        "batch_size": int(run_config["batch_size"]),
+        "random_seed": int(run_config["random_seed"]),
+        "n_classes_per": int(run_config["n_classes_per"]),
+        "shap_threshold": float(run_config["shap_threshold"]),
+        "shap_val_samples": int(run_config["shap_val_samples"]),
+        "shap_explain_count": int(run_config["shap_explain_count"]),
+        "backdoor_ratio": float(run_config["backdoor_ratio"]),
+        "backdoor_poison_fraction": float(run_config["backdoor_poison_fraction"]),
+        "backdoor_target_class": int(run_config["backdoor_target_class"]),
+        "backdoor_trigger_features": str(run_config["backdoor_trigger_features"]),
+        "backdoor_trigger_value": float(run_config["backdoor_trigger_value"]),
+        "benign_adv_ratio": float(run_config["benign_adv_ratio"]),
+        "benign_eps": float(run_config["benign_eps"]),
+        "benign_alpha": float(run_config["benign_alpha"]),
+        "benign_n_iter": float(run_config["benign_n_iter"]),
+        "rollback_threshold": float(run_config["rollback_threshold"]),
+        "quantization_bits": int(run_config["quantization_bits"]),
+        "robustness_eval_attack": str(run_config["robustness_eval_attack"]),
+        "clip_min": float(run_config["clip_min"]),
+        "clip_max": float(run_config["clip_max"]),
+        "simulate_global_leakage": bool(run_config["simulate_global_leakage"]),
+        "tpm_freshness_window": int(run_config["tpm_freshness_window"]),
+        "snapshot_rounds": list(run_config["snapshot_rounds"]),
+        "snapshot_interval": int(run_config["snapshot_interval"])
     }
 
 
@@ -89,22 +89,22 @@ def server_fn(context: Context) -> ServerAppComponents:
     
     logger.info("Starting up... Expecting clients.")
         
-    dataset_path = str(run_config.get("dataset_path", "data/edge_iiotset/raw/network_traffic_samples.csv"))
-    broker_ip = str(run_config.get("broker_ip", "127.0.0.1"))
-    fog_ipc_base = int(run_config.get("fog_ipc_base", 10000))
-    socket_timeout = float(run_config.get("socket_timeout", 600.0))
+    dataset_path = str(run_config["dataset_path"])
+    broker_ip = str(run_config["broker_ip"])
+    fog_ipc_base = int(run_config["fog_ipc_base"])
+    socket_timeout = float(run_config["socket_timeout"])
 
     num_classes = DATASET_METADATA[run_metadata["dataset"]]["classes"]
     n_features = DATASET_METADATA[run_metadata["dataset"]]["features"]
     val_data = None
 
-    random_seed = int(run_config.get("random_seed", 42))
-    test_split = float(run_config.get("test_split", 0.30))
-    val_split = float(run_config.get("val_split", 0.50))
+    random_seed = int(run_config["random_seed"])
+    test_split = float(run_config["test_split"])
+    val_split = float(run_config["val_split"])
     
     if tier == "fog":
         try:
-            simulate_global_leakage = run_config.get("simulate_global_leakage", False)
+            simulate_global_leakage = run_config["simulate_global_leakage"]
 
             # Fetch shuffled and prepared data
             dataset_returns = get_dataset(run_metadata["dataset"], dataset_path, num_classes, random_seed, simulate_global_leakage, False, "val", test_split, val_split)

@@ -188,7 +188,7 @@ class FogAggregator(FedAvg):
             self.global_model.load_state_dict(aggregated_model.state_dict())
             
             # Convert the tensors into raw NumPy arrays and compress them 
-            quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
+            quantization_bits = int(self.run_metadata["quantization_bits"])
             raw_ndarrays = [val.cpu().numpy() for _, val in aggregated_model.state_dict().items()]
             compressed_ndarrays = compress_weights(raw_ndarrays, quantization_bits)
 
@@ -285,7 +285,7 @@ class FogAggregator(FedAvg):
         and translating Flower parameter objects back into state dictionaries. It maps these 
         dictionaries to PyTorch architectures while extracting relevant metadata for weighted aggregation."""
         local_models, sizes, trust_weights, tpm_ids, display_names = [], [], [], [], []
-        quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
+        quantization_bits = int(self.run_metadata["quantization_bits"])
 
         for client_proxy, fit_res in trusted_results:
             # Extract the TPM ID and display identity
@@ -363,7 +363,7 @@ class FogAggregator(FedAvg):
                 return
             
             # Calculate the dynamic minimum acceptable accuracy
-            rollback_fraction = float(self.run_metadata.get("rollback_threshold", 0.80))
+            rollback_fraction = float(self.run_metadata["rollback_threshold"])
             dynamic_threshold = self.previous_val_acc * rollback_fraction
 
             # Check the current accuracy against the previous round's accuracy

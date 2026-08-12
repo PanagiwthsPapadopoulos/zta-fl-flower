@@ -25,13 +25,13 @@ class EdgeTrainer:
         if self.model is None:
             raise RuntimeError(f"{self.log_prefix} Model is uninitialized.")
         weights = [val.cpu().numpy() for _, val in self.model.state_dict().items()]
-        bits = int(self.train_config.get("quantization_bits", 32))
+        bits = int(self.train_config["quantization_bits"])
         return compress_weights(weights, bits)
 
     def set_parameters(self, parameters: list):
         """Decompresses inbound payloads and loads them into PyTorch."""
         if self.model is not None and parameters:
-            bits = int(self.train_config.get("quantization_bits", 32))
+            bits = int(self.train_config["quantization_bits"])
             decompressed_params = decompress_weights(parameters, bits)
             params_dict = zip(self.model.state_dict().keys(), decompressed_params)
             state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
@@ -45,9 +45,9 @@ class EdgeTrainer:
         global_model.eval()
         global_model.to(self.device)
         
-        lr = self.train_config.get("learning_rate", 0.001)
-        role = self.train_config.get("role", "benign")
-        epochs = self.train_config.get("local_epochs", 1)
+        lr = self.train_config["learning_rate"]
+        role = self.train_config["role"]
+        epochs = self.train_config["local_epochs"]
         
         active_loader = self.train_loader
         
@@ -76,18 +76,18 @@ class EdgeTrainer:
 
     def _train_based_on_role(self, role: str, lr: float, current_round: int, active_loader: DataLoader, global_model: torch.nn.Module):
         """Executes the specific PyTorch optimization loop variant strictly dictated by the node's assigned profile role."""
-        clip_norm = float(self.train_config.get("clip_norm", 1.0))
+        clip_norm = float(self.train_config["clip_norm"])
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
         # Shap Aware attacker (label_flip or gradient_manipulation)
         if role in ["shap_aware"]:
-            shap_threshold = float(self.train_config.get("shap_threshold", 0.15))
-            shap_aware_base_attack = self.train_config.get("shap_aware_base_attack", "label_flip")
-            num_classes = self.train_config.get("num_classes", 10)
-            shap_val_samples = self.train_config.get("shap_val_samples", 100)
-            shap_explain_count = self.train_config.get("shap_explain_count", 15)
-            alpha_scale = float(self.train_config.get("alpha", 5.0))
-            p_flip = self.train_config.get("p_flip", 0.2)
+            shap_threshold = float(self.train_config["shap_threshold"])
+            shap_aware_base_attack = self.train_config["shap_aware_base_attack"]
+            num_classes = self.train_config["num_classes"]
+            shap_val_samples = self.train_config["shap_val_samples"]
+            shap_explain_count = self.train_config["shap_explain_count"]
+            alpha_scale = float(self.train_config["alpha"])
+            p_flip = self.train_config["p_flip"]
     
             # Check if the shap aware attack is valid
             if shap_aware_base_attack in ["label_flip", "gradient_manipulation"]:
@@ -104,9 +104,9 @@ class EdgeTrainer:
 
         # Label flip or Gradient manipulation attacker
         elif role in ["label_flip", "gradient_manip"]:
-            alpha_scale = float(self.train_config.get("alpha", 5.0))
-            num_classes = self.train_config.get("num_classes", 15)
-            p_flip = self.train_config.get("p_flip", 0.2)
+            alpha_scale = float(self.train_config["alpha"])
+            num_classes = self.train_config["num_classes"]
+            p_flip = self.train_config["p_flip"]
 
             self.logger.info(f"{self.log_prefix} Performing {role} Attack! Number of classes: {num_classes}, Alpha scale: {alpha_scale}, p_flip: {p_flip}, Learning Rate: {lr}, Clip norm: {clip_norm}", extra={"round": current_round})
             return local_train_byzantine(
@@ -120,13 +120,13 @@ class EdgeTrainer:
             
         # Benign node
         elif role in ["benign"]:
-            adv_ratio = float(self.train_config.get("adv_ratio", 0.0))
-            eps = float(self.train_config.get("eps", 0.1))
-            alpha = float(self.train_config.get("alpha", 0.01))
-            n_iter = int(self.train_config.get("n_iter", 7))
-            clip_min = float(self.train_config.get("clip_min", 0.0))
-            clip_max = float(self.train_config.get("clip_max", 1.0))
-            use_pgd = bool(self.train_config.get("robustness_eval_attack", "pgd") == "pgd")
+            adv_ratio = float(self.train_config["adv_ratio"])
+            eps = float(self.train_config["eps"])
+            alpha = float(self.train_config["alpha"])
+            n_iter = int(self.train_config["n_iter"])
+            clip_min = float(self.train_config["clip_min"])
+            clip_max = float(self.train_config["clip_max"])
+            use_pgd = bool(self.train_config["robustness_eval_attack"] == "pgd")
 
             # Check ratio of adversarial examples. If <= 0, just execute honest training
             if adv_ratio > 0:

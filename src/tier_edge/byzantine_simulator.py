@@ -38,7 +38,7 @@ class AdversaryManager:
                         continue
                         
                     self.attack_type = adv.get("attack_type")
-                    self.activate_on_round = adv.get("activate_on_round", 1)
+                    self.activate_on_round = adv["activate_on_round"]
                     
                     v_fog = adv.get("target_victim_fog", self.fog_num)
                     v_edge = adv.get("target_victim_edge", 1)

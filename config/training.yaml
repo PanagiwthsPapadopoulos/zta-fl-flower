@@ -9,6 +9,8 @@ dataset: "edge_iiotset"                 # Target dataset identifier mapped in da
 dataset_path: "data/edge_iiotset/raw/network_traffic_samples.csv" # Relative path to the raw dataset file
 dataset_fraction: 0.01                  # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
 apply_smote: true                       # Set to true to generate synthetic minority data during training
+test_split: 0.15                        # Percentage of the dataset that will be used for testing
+val_split: 0.15                         # Percentage of the dataset that will be used for validation
 
 # Model
 model_architecture: "cnnlstm"           # Target neural network class mapped in cnn_lstm.py

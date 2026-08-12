@@ -40,7 +40,7 @@ class GlobalEvaluator:
         self.logger = logger
         
         # Initialize the model blueprint
-        model_arch = self.run_metadata.get("model_architecture", "cnnlstm")
+        model_arch = self.run_metadata["model_architecture"]
         self.model = get_model(model_arch, self.n_features, self.num_classes).to(self.device)
         self.criterion = nn.CrossEntropyLoss()
 
@@ -67,7 +67,7 @@ class GlobalEvaluator:
         """Reconstructs the global model and evaluates it against the centralized test set."""
         
         # 1. Decompress and load the weights into the model
-        quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
+        quantization_bits = int(self.run_metadata["quantization_bits"])
         decompressed_params = decompress_weights(parameters, quantization_bits)
 
         state_dict = {}

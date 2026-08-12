@@ -3,10 +3,10 @@ import random
 
 def assign_edge_roles(run_config: dict, total_edges: int, global_index: int, master_seed: int, logger) -> str:
     """Computes strict assignments distributing adversarial identities across the edge grid."""
-    backdoor_ratio = float(run_config.get("backdoor_ratio", 0.0))
-    label_flip_ratio = float(run_config.get("label_flip_ratio", 0.0))
-    grad_manip_ratio = float(run_config.get("grad_manip_ratio", 0.0))
-    shap_aware_ratio = float(run_config.get("shap_aware_ratio", 0.0))
+    backdoor_ratio = float(run_config["backdoor_ratio"])
+    label_flip_ratio = float(run_config["label_flip_ratio"])
+    grad_manip_ratio = float(run_config["grad_manip_ratio"])
+    shap_aware_ratio = float(run_config["shap_aware_ratio"])
 
     num_backdoor = round(total_edges * backdoor_ratio)
     num_label_flip = round(total_edges * label_flip_ratio)
