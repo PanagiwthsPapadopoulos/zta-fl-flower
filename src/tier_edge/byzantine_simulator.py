@@ -18,6 +18,7 @@ class AdversaryManager:
         self.logger = logger
         self.attack_type = None
         self.activate_on_round = 9999
+        # This gets overwritten in client.py at the start of each round
         self.current_round = 0
         self.target_victim = None 
         self.cache_file = f"/tmp/tpm_cache_{fog_num}_{edge_num}.json"
@@ -34,7 +35,7 @@ class AdversaryManager:
             for adv in adversaries:
                 if adv.get("fog_num") == self.fog_num and adv.get("edge_num") == self.edge_num:
                     if not adv.get("enabled", True): 
-                        self.logger.info(f"{self.log_prefix} Threat profile found but DISABLED in config.")
+                        # self.logger.info(f"{self.log_prefix} Threat profile found but DISABLED in config.", extra={"round": self.current_round})
                         continue
                         
                     self.attack_type = adv.get("attack_type")
@@ -44,10 +45,10 @@ class AdversaryManager:
                     v_edge = adv.get("target_victim_edge", 1)
                     self.target_victim = f"[EDGE {v_fog}_{v_edge}]"
 
-                    self.logger.warning(f"🚨 ADVERSARY PROFILE LOADED: {self.attack_type.upper()} scheduled for Round {self.activate_on_round}")
+                    self.logger.warning(f"🚨 ADVERSARY PROFILE LOADED: {self.attack_type.upper()} scheduled for Round {self.activate_on_round}", extra={"round": self.current_round})
                     break
         except Exception as e:
-            self.logger.error(f"AdversaryManager failed to load profile: {e}")
+            self.logger.error(f"AdversaryManager failed to load profile: {e}", extra={"round": self.current_round})
 
     def corrupt_data_if_needed(self, trainloader):
         """Wraps the honest local data loader with a malicious transformation loader if data poisoning is actively scheduled."""
@@ -59,7 +60,7 @@ class AdversaryManager:
                     import torch
                     for x, y in self.loader:
                         if manager.current_round == manager.activate_on_round:
-                            manager.logger.error(f"{manager.log_prefix} ☠️ EXECUTING DATA POISONING: Flipping labels to 0")
+                            manager.logger.error(f"{manager.log_prefix} ☠️ EXECUTING DATA POISONING: Flipping labels to 0", extra={"round": self.current_round})
                             yield x, torch.zeros_like(y)
                         else:
                             yield x, y
@@ -74,19 +75,19 @@ class AdversaryManager:
 
         if self.attack_type == "tpm_replay":
             if self.current_round == self.activate_on_round:
-                self.logger.debug(f"{self.log_prefix} Hoarding valid token to disk for future replay attack...")
+                self.logger.debug(f"{self.log_prefix} Hoarding valid token to disk for future replay attack...", extra={"round": self.current_round})
                 token = metrics.get("tpm_token_json")
                 if token:
                     with open(self.cache_file, "w") as f:
                         f.write(token)
             else:
-                self.logger.error(f"{self.log_prefix} ☠️ EXECUTING REPLAY ATTACK: Injecting stale token from disk.")
+                self.logger.error(f"{self.log_prefix} ☠️ EXECUTING REPLAY ATTACK: Injecting stale token from disk.", extra={"round": self.current_round})
                 if os.path.exists(self.cache_file):
                     with open(self.cache_file, "r") as f:
                         metrics["tpm_token_json"] = f.read()
 
         elif self.attack_type == "tpm_forgery" and self.current_round == self.activate_on_round:
-            self.logger.error(f"{self.log_prefix} ☠️ EXECUTING TPM FORGERY: Corrupting RSA signature payload.")
+            self.logger.error(f"{self.log_prefix} ☠️ EXECUTING TPM FORGERY: Corrupting RSA signature payload.", extra={"round": self.current_round})
             token_str = metrics.get("tpm_token_json")
             if token_str:
                 try:
@@ -105,13 +106,13 @@ class AdversaryManager:
                     token["pcr_data"] = "INJECTED PCR DURING TRAINING"
 
                     if self.current_round == self.activate_on_round:
-                        self.logger.info(f"{self.log_prefix} Executing PCR alteration. New PCR value: \"INJECTED PCR DURING TRAINING\". ")
+                        self.logger.info(f"{self.log_prefix} Executing PCR alteration. New PCR value: \"INJECTED PCR DURING TRAINING\". ", extra={"round": self.current_round})
                         
                     metrics["tpm_token_json"] = json.dumps(token)
                 except Exception: pass
 
         elif self.attack_type == "model_poisoning" and self.current_round == self.activate_on_round:
-            self.logger.error(f"{self.log_prefix} ☠️ EXECUTING MODEL POISONING: Injecting randomized Gaussian weights.")
+            self.logger.error(f"{self.log_prefix} ☠️ EXECUTING MODEL POISONING: Injecting randomized Gaussian weights.", extra={"round": self.current_round})
             parameters = [np.random.normal(0, 5, size=p.shape).astype(p.dtype) for p in parameters]
 
         return parameters, metrics

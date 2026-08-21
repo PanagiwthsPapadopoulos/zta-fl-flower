@@ -3,6 +3,7 @@ logs/
 results/
 runtime/
 experiments_queue/
+notes/
 
 # Virtual Environments
 .venv-zta/

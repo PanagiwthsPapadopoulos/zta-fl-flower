@@ -3,6 +3,7 @@ import os
 import time
 import traceback
 import torch
+import json
 from torch.utils.data import DataLoader, TensorDataset
 
 from flwr.common import Context
@@ -77,19 +78,35 @@ class Client(NumPyClient):
         """Executes the local training round and returns the sequentially updated, optionally corrupted, network parameters."""
         try:
             current_round = config["server_round"]
+
+            # Per-round variable dump
+            round_dump = {
+                "round": current_round,
+                "node_type": self.node_type,
+                "log_prefix": self.log_prefix,
+                "server_provided_config": config,
+                "local_train_config": self.train_config,
+                "dataset_metadata": self.dataset_metadata,
+                "payload_params_count": len(parameters) if parameters else 0
+            }
+            self.logger.debug(f"Variable Dump (ROUND {current_round}): {json.dumps(round_dump, indent=2, default=str)}")
             
             if self.node_type == "fog_client":
                 from src.tier_edge.fog_bridge_client import FogBridgeClient
                 bridge = FogBridgeClient(self.logger, self.log_prefix, self.ipc_port, self.socket_timeout)
                 return bridge.execute_round(current_round)
-            elif self.node_type == "edge":                
+            elif self.node_type == "edge":
                 self.adversary_manager.current_round = current_round
-                
-                # Track Local Execution Latency
-                start_time = time.time()
+
+                # Track Local Execution Timestamps & Latency
+                train_start_unix = time.time()
                 res_params, num_examples, metrics = self.trainer.execute_training(parameters, current_round, config)
-                metrics["latency_adv_training_sec"] = time.time() - start_time
+                train_end_unix = time.time()
                 
+                metrics["local_adversarial_training_start_unix"] = train_start_unix
+                metrics["local_adversarial_training_end_unix"] = train_end_unix
+                metrics["latency_adv_training_sec"] = train_end_unix - train_start_unix
+
                 metrics["log_prefix"] = self.log_prefix
                 res_params, metrics = self.adversary_manager.corrupt_payload_if_needed(res_params, metrics)
                 

@@ -21,7 +21,7 @@ class ZeroTrustGatekeeper:
             self.tpm_engine = TPMVerifier(logger=self.logger, insecure_mode=insecure_flag)
             self.trust_db = TrustDatabase(logger=self.logger) 
         except Exception as e:
-            self.logger.error(f"{self.log_prefix} [GATEKEEPER] Initialization failed: {e}")
+            self.logger.error(f"{self.log_prefix} [GATEKEEPER] Initialization failed: {e}", extra={"round": current_round})
             self.tpm_engine = None
             self.trust_db = None
 
@@ -33,9 +33,9 @@ class ZeroTrustGatekeeper:
                 with open(ledger_path, "r") as f:
                     return json.load(f)
             except json.JSONDecodeError:
-                self.logger.error(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger is corrupted or empty!")
+                self.logger.error(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger is corrupted or empty!", extra={"round": current_round})
         else:
-            self.logger.warning(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger missing at {ledger_path}! Network locked down.")
+            self.logger.warning(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger missing at {ledger_path}! Network locked down.", extra={"round": current_round})
         
         return {}
 
@@ -89,7 +89,7 @@ class ZeroTrustGatekeeper:
             expected_pcr = current_ledger.get(expected_tpm_id)
             
             if not expected_pcr:
-                self.logger.error(f"{self.log_prefix} 🛑 Unauthorized Device! ID {expected_tpm_id} is missing from the Admin ledger.")
+                self.logger.error(f"{self.log_prefix} 🛑 Unauthorized Device! ID {expected_tpm_id} is missing from the Admin ledger.", extra={"round": current_round})
                 return False, tpm_id, untrusted_log_prefix
             
             pubkey_path = os.path.join(folder_path, "ak.pub")
@@ -111,5 +111,5 @@ class ZeroTrustGatekeeper:
             return authenticated, tpm_id, display_identity
 
         except Exception as e:
-            self.logger.error(f"Stateless verification error for {untrusted_log_prefix}: {e}")
+            self.logger.error(f"Stateless verification error for {untrusted_log_prefix}: {e}", extra={"round": current_round})
             return False, "UNKNOWN", untrusted_log_prefix

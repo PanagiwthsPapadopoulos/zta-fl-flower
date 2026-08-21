@@ -51,7 +51,7 @@ class EdgeTrainer:
         
         active_loader = self.train_loader
         
-        self.logger.info(f"{self.log_prefix} Starting Training with learning rate: {lr}, epochs: {epochs}, role: {role}")
+        self.logger.info(f"{self.log_prefix} Starting Training with learning rate: {lr}, epochs: {epochs}, role: {role}", extra={"round": current_round})
                     
         # Start the training for each role
         loss = 0.0
@@ -62,12 +62,13 @@ class EdgeTrainer:
         metadata = {
             "node_name": self.log_prefix,
             "loss": loss,
+            "role": role,
             **self.dataset_metadata 
         }
 
         # Generate TPM token
         from src.tier_edge.tpm_attestation import TPMAttestation
-        tpm_engine = TPMAttestation(logger=self.logger)
+        tpm_engine = TPMAttestation(logger=self.logger, current_round=current_round)
         nonce = config.get("nonce", f"round_{current_round}_default")
         tpm_token = tpm_engine.generate_attestation_token(nonce=nonce, software_label=self.log_prefix, round_num=current_round)
         metadata["tpm_token_json"] = json.dumps(tpm_token)

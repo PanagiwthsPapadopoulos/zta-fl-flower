@@ -10,17 +10,18 @@ import traceback
 
 class TPMAttestation:
     """A hardware abstraction layer for TPM 2.0 cryptographic provisioning and zero-trust attestation quote generation."""
-    def __init__(self, logger: logging.Logger, insecure_mode: bool = False):
+    def __init__(self, logger: logging.Logger, current_round: int=0, insecure_mode: bool = False):
         self.logger = logger
         self.insecure_mode = insecure_mode or os.getenv("ZTA_INSECURE_MODE", "false").lower() == "true"
         self.tcti = os.getenv("TPM2TOOLS_TCTI", "").strip()
+        self.current_round = current_round
         
         if not self.insecure_mode and self.tcti:
-            self.logger.info("TPMEngine: Hardware context detected. Initializing prover configuration.", extra={"round": 0})
+            self.logger.info("TPMEngine: Hardware context detected. Initializing prover configuration.", extra={"round": self.current_round})
             self._flush_tpm_memory()
             self._provision_ak()
         else:
-            self.logger.info("TPMEngine: Hardware context absent or insecure mode enabled. Defaulting to verifier-only mode.", extra={"round": 0})
+            self.logger.info("TPMEngine: Hardware context absent or insecure mode enabled. Defaulting to verifier-only mode.", extra={"round": self.current_round})
 
     def _flush_tpm_memory(self):
         try:
@@ -46,7 +47,7 @@ class TPMAttestation:
                         break
 
             if subprocess.run(["tpm2_readpublic", "-c", "0x81010002"], capture_output=True).returncode == 0:
-                self.logger.info("TPMEngine: AK already exists in NVRAM.", extra={"round": 0})
+                self.logger.info("TPMEngine: AK already exists in NVRAM.", extra={"round": self.current_round})
                 if shared_ak_pub and not os.path.exists(shared_ak_pub):
                     subprocess.run(["tpm2_readpublic", "-c", "0x81010002", "-o", shared_ak_pub], check=True)
                 return 
@@ -68,7 +69,7 @@ class TPMAttestation:
             if shared_ak_pub:
                 subprocess.run(["cp", "/tmp/ak.pub", shared_ak_pub], check=True)
         except Exception as e:
-            self.logger.error(f"TPMEngine: Provisioning error: {str(e)}", extra={"round": 0})
+            self.logger.error(f"TPMEngine: Provisioning error: {str(e)}", extra={"round": self.current_round})
         finally:
             self._flush_tpm_memory()
 

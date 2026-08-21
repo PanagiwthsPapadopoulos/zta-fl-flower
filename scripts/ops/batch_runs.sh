@@ -33,8 +33,8 @@ RESULTS_DIR="results"
 ARCHIVE_DIR="$RESULTS_DIR/batch_archives"
 STATUS_FILE="$ARCHIVE_DIR/batch_status.log"
 
-# Failsafe timeout (e.g., 3 hours per run)
-TIMEOUT_SECONDS=10800 
+# Failsafe timeout (7 hours per run)
+TIMEOUT_SECONDS=25200 
 
 mkdir -p "$QUEUE_DIR"
 mkdir -p "$ARCHIVE_DIR"

@@ -118,36 +118,64 @@ class FogAggregator(FedAvg):
         
         This function is called after receiving the model updates from clients."""
         # Check if no clients returned updates to return early
-        self.logger.info(f"{self.log_prefix} No client returned updates! Releasing IPC bridge with empty payload.")
+        self.logger.info(f"{self.log_prefix} No client returned updates! Releasing IPC bridge with empty payload.", extra={"round": server_round})
         if not results:
             self._relay_ipc_fog_bridge(None)
             return None, {}
 
         # Filter the incoming nodes based on their token validation
         round_display = self.current_bridged_round
+
+        # Start Macro Timer for the entire aggregation and preprocessing pipeline
+        round_start_unix = time.time()
+
+        # Extract cryptographic token sizes and track baseline roles using TPM IDs
+        token_sizes_bytes = {}
+        node_ground_truths = {}
+        for client_proxy, fit_res in results:
+            raw_token = fit_res.metrics.get("tpm_token_json", "")
+            
+            # Attempt to safely extract the hardware ID early; fallback to CID
+            tpm_id = f"CID-{client_proxy.cid}"
+            if raw_token:
+                try:
+                    import json
+                    tpm_id = json.loads(raw_token).get("IDi", tpm_id)
+                except Exception:
+                    pass
+            
+            token_sizes_bytes[tpm_id] = len(raw_token.encode('utf-8'))
+            node_ground_truths[tpm_id] = fit_res.metrics.get("role", "unknown")
         
         # Total nodes connected to Fog server
-        attest_start = time.time()
+        attestation_validation_start_unix = time.time()
         total_received_updates = len(results)
         trusted_results = self.gatekeeper.filter_node_updates(self.tier, round_display, results, self.active_nonces)
-        attest_end = time.time()
+        attestation_validation_end_unix = time.time()
         attestation_failures_this_round = total_received_updates - len(trusted_results)
-        latency_attestation_ms = ((attest_end - attest_start) * 1000) / max(1, total_received_updates)
+        latency_attestation_ms = ((attestation_validation_end_unix - attestation_validation_start_unix) * 1000) / max(1, total_received_updates)
 
         # Alert if no nodes pass the authentication check
         # This only checks the identity of the node, not its behavior
         if not trusted_results:
-            self.logger.warning(f"{self.log_prefix} No trusted results to aggregate! Releasing IPC bridge with empty payload.")
+            self.logger.warning(f"{self.log_prefix} No trusted results to aggregate! Releasing IPC bridge with empty payload.", extra={"round": server_round})
             self._relay_ipc_fog_bridge(None)
             return None, {}
 
         # Extract Per-Node Metrics
         node_training_latencies = {}
         node_payload_sizes = {}
+        node_local_training_start_unix = {}
+        node_local_training_end_unix = {}
         for client_proxy, fit_res in trusted_results:
             tpm_id = fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}")
             node_training_latencies[tpm_id] = float(fit_res.metrics.get("latency_adv_training_sec", 0.0))
-            node_payload_sizes[tpm_id] = float(fit_res.metrics.get("payload_size_mb", 0.0))            
+            node_payload_sizes[tpm_id] = float(fit_res.metrics.get("payload_size_mb", 0.0))
+            if "local_adversarial_training_start_unix" in fit_res.metrics:
+                node_local_training_start_unix[tpm_id] = fit_res.metrics.get("local_adversarial_training_start_unix")
+            if "local_adversarial_training_end_unix" in fit_res.metrics:
+                node_local_training_end_unix[tpm_id] = fit_res.metrics.get("local_adversarial_training_end_unix")
+
 
         # From here and below, all nodes are authenticated 
         self.logger.info(f"{self.log_prefix} Executing SHAP aggregation...", extra={"round": round_display})
@@ -157,12 +185,13 @@ class FogAggregator(FedAvg):
 
         try:
             # SHAP timing
-            shap_start = time.time()
+            shap_calculation_start_unix = time.time()
 
             # Apply aggregation strategy
             aggregated_model, saboteurs, rewarded_nodes, raw_shap_scores = self._apply_aggregation_strategy(local_models, sizes, trust_weights, tpm_ids, display_names) 
             
-            latency_shap_computation_sec = time.time() - shap_start
+            shap_calculation_end_unix = time.time()
+            latency_shap_computation_sec = shap_calculation_end_unix - shap_calculation_start_unix
 
             # Deal with the Saboteur and Rewarded Nodes accordingly
             if self.gatekeeper.trust_db:
@@ -174,12 +203,8 @@ class FogAggregator(FedAvg):
                     self.logger.info(f"{self.log_prefix} SHAP EXCELLENCE: {display_identity} strictly exceeded median stability. Granting behavioral trust reward!", extra={"round": round_display})
                     self.gatekeeper.trust_db.apply_behavioral_reward(node_id=tpm_id, display_name=display_identity, round_num=round_display)
 
-            # Dump the synchronized state after updating the ledger
-            self._dump_fog_state(
-                round_display, attestation_failures_this_round, raw_shap_scores, 
-                latency_attestation_ms, node_training_latencies, 
-                latency_shap_computation_sec, node_payload_sizes
-            )
+            # Start Aggregation timer
+            aggregation_start_unix = time.time()
 
             # Apply rollback if needed
             self._evaluate_rollback_sanity_check(aggregated_model, round_display)
@@ -195,11 +220,46 @@ class FogAggregator(FedAvg):
             # Convert the NumPy arrays into Flower's specific Parameters object
             # so that they can be transmitted over the network.
             aggregated_parameters = ndarrays_to_parameters(compressed_ndarrays)
+
+            # End Aggregation timer
+            aggregation_end_unix = time.time()
+            
             aggregated_metrics = {}
 
             # Create a dictionary to piggyback custom metrics alongside model weights
             if hasattr(self, 'current_regional_trust'):
                 aggregated_metrics["total_regional_trust"] = self.current_regional_trust
+            aggregated_metrics["saboteurs"] = saboteurs
+            aggregated_metrics["rewarded_nodes"] = rewarded_nodes
+            aggregated_metrics["raw_shap_scores"] = raw_shap_scores
+
+            # End round timer
+            round_end_unix = time.time()
+
+            # Dump the synchronized state after updating the ledger
+            self._dump_fog_state(
+                round_num=round_display,
+                attestation_failures=attestation_failures_this_round,
+                raw_shap_scores=raw_shap_scores, 
+                latency_attestation_ms=latency_attestation_ms, 
+                node_training_latencies=node_training_latencies, 
+                latency_shap_computation_sec=latency_shap_computation_sec, 
+                node_payload_sizes=node_payload_sizes,
+                token_sizes_bytes=token_sizes_bytes,         
+                node_ground_truths=node_ground_truths,      
+                saboteurs=saboteurs,                        
+                rewarded_nodes=rewarded_nodes,              
+                round_start_unix=round_start_unix,          
+                round_end_unix=round_end_unix,               
+                attestation_validation_start_unix=attestation_validation_start_unix,
+                attestation_validation_end_unix=attestation_validation_end_unix,
+                shap_calculation_start_unix=shap_calculation_start_unix,
+                shap_calculation_end_unix=shap_calculation_end_unix,
+                aggregation_start_unix=aggregation_start_unix,
+                aggregation_end_unix=aggregation_end_unix,
+                node_local_training_start_unix=node_local_training_start_unix,
+                node_local_training_end_unix=node_local_training_end_unix
+            )
 
         except Exception as e:
             self.logger.error(f"{self.log_prefix} Math failed: {e}\n{traceback.format_exc()}", extra={"round": round_display})
@@ -209,7 +269,28 @@ class FogAggregator(FedAvg):
         self._relay_ipc_fog_bridge(aggregated_parameters)
         return aggregated_parameters, aggregated_metrics
 
-    def _dump_fog_state(self, round_num: int, attestation_failures: int, raw_shap_scores: dict, latency_attestation_ms: float, node_training_latencies: dict, latency_shap_computation_sec: float, node_payload_sizes: dict) -> None:
+    def _dump_fog_state(self,          
+        round_num: int,          
+        attestation_failures: int,          
+        raw_shap_scores: dict,          
+        latency_attestation_ms: float,          
+        node_training_latencies: dict,          
+        latency_shap_computation_sec: float,          
+        node_payload_sizes: dict,          
+        token_sizes_bytes: dict,          
+        node_ground_truths: dict,         
+        saboteurs: list,         
+        rewarded_nodes: list,          
+        round_start_unix: float,         
+        round_end_unix: float,
+        attestation_validation_start_unix: float,
+        attestation_validation_end_unix: float,
+        shap_calculation_start_unix: float,
+        shap_calculation_end_unix: float,
+        aggregation_start_unix: float,
+        aggregation_end_unix: float,
+        node_local_training_start_unix: dict,
+        node_local_training_end_unix: dict) -> None:
         """Packages the raw TrustDB ledger, SHAP scores, and system telemetry into 3 isolated JSON artifacts."""
         trust_db_snapshot = {}
         
@@ -224,15 +305,29 @@ class FogAggregator(FedAvg):
                 
         # Update the main state history in memory
         self.fog_state_history["rounds"][round_num] = {
-            "attestation_failures": attestation_failures,
-            "trust_db": trust_db_snapshot,
-            "raw_shap_scores": raw_shap_scores,
-            "latency_attestation_ms": latency_attestation_ms,
-            "node_training_latencies": node_training_latencies,
-            "latency_shap_computation_sec": latency_shap_computation_sec,
-            "node_payload_sizes": node_payload_sizes,
-            "timestamp": datetime.now().isoformat()
-        }
+        "attestation_failures": attestation_failures,
+        "trust_db": trust_db_snapshot,
+        "raw_shap_scores": raw_shap_scores,
+        "latency_attestation_ms": latency_attestation_ms,
+        "node_training_latencies": node_training_latencies,
+        "latency_shap_computation_sec": latency_shap_computation_sec,
+        "node_payload_sizes": node_payload_sizes,
+        "token_sizes_bytes": token_sizes_bytes,
+        "node_ground_truths": node_ground_truths,
+        "saboteurs": saboteurs,
+        "rewarded_nodes": rewarded_nodes,
+        "round_start_unix": round_start_unix,
+        "round_end_unix": round_end_unix,
+        "attestation_validation_start_unix": attestation_validation_start_unix,
+        "attestation_validation_end_unix": attestation_validation_end_unix,
+        "shap_calculation_start_unix": shap_calculation_start_unix,
+        "shap_calculation_end_unix": shap_calculation_end_unix,
+        "aggregation_start_unix": aggregation_start_unix,
+        "aggregation_end_unix": aggregation_end_unix,
+        "node_local_training_start_unix": node_local_training_start_unix,
+        "node_local_training_end_unix": node_local_training_end_unix,
+        "timestamp": datetime.now().isoformat()
+    }
         
         # Separate the history into the 3 Architectural Pillars
         trust_history = {"metadata": self.fog_state_history.get("metadata", {}), "rounds": {}}
@@ -243,10 +338,13 @@ class FogAggregator(FedAvg):
             trust_history["rounds"][r] = {
                 "attestation_failures": data["attestation_failures"],
                 "trust_db": data["trust_db"],
+                "node_ground_truths": data["node_ground_truths"], # (For FAR/FRR calc)
                 "timestamp": data["timestamp"]
             }
             shap_history["rounds"][r] = {
                 "raw_shap_scores": data["raw_shap_scores"],
+                "saboteurs": data["saboteurs"],                  
+                "rewarded_nodes": data["rewarded_nodes"],         
                 "timestamp": data["timestamp"]
             }
             perf_history["rounds"][r] = {
@@ -254,6 +352,17 @@ class FogAggregator(FedAvg):
                 "latency_shap_computation_sec": data["latency_shap_computation_sec"],
                 "node_training_latencies": data.get("node_training_latencies", {}),
                 "node_payload_sizes": data.get("node_payload_sizes", {}),
+                "token_sizes_bytes": data.get("token_sizes_bytes", {}),
+                "round_start_unix": data.get("round_start_unix"),
+                "round_end_unix": data.get("round_end_unix"),
+                "attestation_validation_start_unix": data.get("attestation_validation_start_unix"),
+                "attestation_validation_end_unix": data.get("attestation_validation_end_unix"),
+                "shap_calculation_start_unix": data.get("shap_calculation_start_unix"),
+                "shap_calculation_end_unix": data.get("shap_calculation_end_unix"),
+                "aggregation_start_unix": data.get("aggregation_start_unix"),
+                "aggregation_end_unix": data.get("aggregation_end_unix"),
+                "node_local_training_start_unix": data.get("node_local_training_start_unix", {}),
+                "node_local_training_end_unix": data.get("node_local_training_end_unix", {}),
                 "timestamp": data["timestamp"]
             }
         
@@ -357,7 +466,7 @@ class FogAggregator(FedAvg):
             # If this is the first time the check is running
             # Take a deep copy of the model's weights and save the accuracy
             if self.previous_val_acc is None:
-                self.logger.info(f"{self.log_prefix} ✅ Initializing baseline state.")
+                self.logger.info(f"{self.log_prefix} ✅ Initializing baseline state.", extra={"round": round_display})
                 self.cached_global_state = copy.deepcopy(aggregated_model.state_dict())
                 self.previous_val_acc = val_acc
                 return
