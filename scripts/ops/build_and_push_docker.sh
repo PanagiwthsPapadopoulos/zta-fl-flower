@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e  # Exit immediately if any command fails
 
 # Define your registry details (Change this to your actual Docker Hub username)
 DOCKER_USER="panagiotispapadopoulos"

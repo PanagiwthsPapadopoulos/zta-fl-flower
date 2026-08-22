@@ -5,6 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Install TPM emulators and the missing tools package
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
     swtpm \
     swtpm-tools \
     tpm2-tools \

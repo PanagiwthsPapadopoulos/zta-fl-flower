@@ -43,12 +43,12 @@ PIDS=()
 # UTILITIES: CLEANUP & TIMEZONE DETECTION
 # =========================================================
 cleanup() {
-    echo -e "\n🛑 Caught Ctrl+C! Shutting down the Docker Engine..."
+    echo -e "\n🛑 Caught Shutdown Signal (Ctrl+C / Ctrl+Z)! Shutting down the Docker Engine..."
     docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down --remove-orphans 2>/dev/null
     echo "✅ Teardown complete. Network is offline."
     exit 0
 }
-trap cleanup SIGINT SIGTERM
+trap cleanup SIGINT SIGTERM SIGTSTP
 
 if [ -L /etc/localtime ]; then
     HOST_TZ=$(readlink /etc/localtime | sed 's#^.*zoneinfo/##')

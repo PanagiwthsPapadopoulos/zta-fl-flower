@@ -4,6 +4,7 @@ USER root
 ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y \
+    tzdata \
     tpm2-tools \
     && rm -rf /var/lib/apt/lists/*
 
