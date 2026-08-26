@@ -146,14 +146,20 @@ class FogAggregator(FedAvg):
             
             token_sizes_bytes[tpm_id] = len(raw_token.encode('utf-8'))
             node_ground_truths[tpm_id] = fit_res.metrics.get("role", "unknown")
+
+        # Extract the list of all participating IDs from the ground truths mapping
+        all_tpm_ids = list(node_ground_truths.keys())
         
         # Total nodes connected to Fog server
         attestation_validation_start_unix = time.time()
         total_received_updates = len(results)
         trusted_results = self.gatekeeper.filter_node_updates(self.tier, round_display, results, self.active_nonces)
         attestation_validation_end_unix = time.time()
-        attestation_failures_this_round = total_received_updates - len(trusted_results)
-        latency_attestation_ms = ((attestation_validation_end_unix - attestation_validation_start_unix) * 1000) / max(1, total_received_updates)
+        latency_attestation_ms = (attestation_validation_end_unix - attestation_validation_start_unix) * 1000
+
+        # Map the accepted and rejected lists
+        attestation_accepted = [fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}") for client_proxy, fit_res in trusted_results]
+        attestation_rejected = [tid for tid in all_tpm_ids if tid not in attestation_accepted]
 
         # Alert if no nodes pass the authentication check
         # This only checks the identity of the node, not its behavior
@@ -239,7 +245,8 @@ class FogAggregator(FedAvg):
             # Dump the synchronized state after updating the ledger
             self._dump_fog_state(
                 round_num=round_display,
-                attestation_failures=attestation_failures_this_round,
+                attestation_accepted=attestation_accepted,
+                attestation_rejected=attestation_rejected,
                 raw_shap_scores=raw_shap_scores, 
                 latency_attestation_ms=latency_attestation_ms, 
                 node_training_latencies=node_training_latencies, 
@@ -271,7 +278,8 @@ class FogAggregator(FedAvg):
 
     def _dump_fog_state(self,          
         round_num: int,          
-        attestation_failures: int,          
+        attestation_accepted: list, 
+        attestation_rejected: list,         
         raw_shap_scores: dict,          
         latency_attestation_ms: float,          
         node_training_latencies: dict,          
@@ -292,6 +300,7 @@ class FogAggregator(FedAvg):
         node_local_training_start_unix: dict,
         node_local_training_end_unix: dict) -> None:
         """Packages the raw TrustDB ledger, SHAP scores, and system telemetry into 3 isolated JSON artifacts."""
+        
         trust_db_snapshot = {}
         
         # Safely extract the raw ledger state
@@ -300,12 +309,14 @@ class FogAggregator(FedAvg):
                 trust_db_snapshot[node_id] = {
                     "score": state["score"],
                     "is_quarantined": state["is_quarantined"],
-                    "recovery_streak": state["recovery_streak"]
+                    "recovery_streak": state["recovery_streak"],
+                    "last_attestation_passed": state.get("last_attestation_passed", False)
                 }
                 
         # Update the main state history in memory
         self.fog_state_history["rounds"][round_num] = {
-        "attestation_failures": attestation_failures,
+        "attestation_accepted": attestation_accepted,
+        "attestation_rejected": attestation_rejected,
         "trust_db": trust_db_snapshot,
         "raw_shap_scores": raw_shap_scores,
         "latency_attestation_ms": latency_attestation_ms,
@@ -336,9 +347,10 @@ class FogAggregator(FedAvg):
 
         for r, data in self.fog_state_history["rounds"].items():
             trust_history["rounds"][r] = {
-                "attestation_failures": data["attestation_failures"],
+                "attestation_accepted": data["attestation_accepted"],
+                "attestation_rejected": data["attestation_rejected"],
                 "trust_db": data["trust_db"],
-                "node_ground_truths": data["node_ground_truths"], # (For FAR/FRR calc)
+                "node_ground_truths": data["node_ground_truths"],
                 "timestamp": data["timestamp"]
             }
             shap_history["rounds"][r] = {

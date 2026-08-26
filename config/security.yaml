@@ -1,5 +1,5 @@
 # Global Security
-simulate_global_leakage: true           # true = The Paper's Method. false = Strict Real-World Security
+simulate_global_leakage: false           # true = The Paper's Method. false = Strict Real-World Security
 shap_aware_base_attack: "label_flip"    # Base attack for shap-aware adversaries. Select one from label_flip, gradient_manipulation. If an invalid attack name is inserted, honest training is performed
 rollback_threshold: 0.80                # Accuracy threshold. If global accuracy drops below this, weights revert to previous round
 tpm_freshness_window: 120               # Expiration Duration for timestamp on TPM emulator in seconds

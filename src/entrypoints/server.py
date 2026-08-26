@@ -69,7 +69,8 @@ def _build_run_metadata(run_config: dict) -> dict:
         "simulate_global_leakage": bool(run_config["simulate_global_leakage"]),
         "tpm_freshness_window": int(run_config["tpm_freshness_window"]),
         "snapshot_rounds": list(run_config["snapshot_rounds"]),
-        "snapshot_interval": int(run_config["snapshot_interval"])
+        "snapshot_interval": int(run_config["snapshot_interval"]),
+        "apply_smote": bool(run_config["apply_smote"]),
     }
 
 
@@ -105,10 +106,9 @@ def server_fn(context: Context) -> ServerAppComponents:
     if tier == "fog":
         try:
             simulate_global_leakage = run_config["simulate_global_leakage"]
-
+            apply_smote = run_config["apply_smote"]  
             # Fetch shuffled and prepared data
-            dataset_returns = get_dataset(run_metadata["dataset"], dataset_path, num_classes, random_seed, simulate_global_leakage, False, "val", test_split, val_split)
-            
+            dataset_returns = get_dataset(run_metadata["dataset"], dataset_path, num_classes, random_seed, simulate_global_leakage, apply_smote, "val", test_split, val_split)            
             X_full = dataset_returns[0]
             y_full = dataset_returns[1]
 

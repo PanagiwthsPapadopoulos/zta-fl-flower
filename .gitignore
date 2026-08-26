@@ -22,6 +22,10 @@ src/network/nginx.conf
 *.ext
 data/tpm_state/
 
+# Compiled PyTorch dataset artifacts
+data/*/artifacts/
+*.pt
+
 # Python Bytecode & Cache
 __pycache__/
 *.pyc

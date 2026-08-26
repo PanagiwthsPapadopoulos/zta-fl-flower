@@ -223,11 +223,11 @@ Once the network finishes its communication rounds, the results, including aggre
 
 You can generate visualizations (like Accuracy vs. Communication Rounds, or SHAP stability distributions) using the provided script:
 
-* **Create and Activate the virtual environment & Install matplotlib**
+* **Create and Activate the virtual environment & Install Requirements**
 ```
 python3 -m venv .venv-zta
 source .venv-zta/bin/activate
-pip install "matplotlib>=3.10.9"
+pip install -r requirements.txt
 ```
 
 * **Auto-detect latest run:** 
@@ -246,6 +246,12 @@ python3 tools/plot_metrics.py --panels loss asr pgd
 **Available Panels:** `accuracy_f1`, `loss`, `asr`, `pgd`, `fgsm`.
 
 Generated plots will be saved to `results/experiment_name/`.
+
+You can also calculate post-training metrics such as ASR, FAR, FRR, FPR and adversarial robustness with the following command:
+
+```
+python3 scripts/ops/evaluate_security.py 'test_run'
+```
 
 ---
 

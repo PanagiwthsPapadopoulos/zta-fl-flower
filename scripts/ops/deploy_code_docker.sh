@@ -124,7 +124,29 @@ for i in $(seq 1 $NUM_FOGS); do
 done
 
 # =========================================================
-# 3. FAB DEPLOYMENT DISPATCH
+# 3. ARTIFACT BUILDER (THE "BIG CRUNCH")
+# =========================================================
+echo "================================================="
+echo " 🧱 COMPILING DATASET ARTIFACTS (IF MISSING)      "
+echo "================================================="
+# Spin up a temporary container. If it fails (!), abort everything.
+if ! docker run --rm \
+    --entrypoint python3 \
+    -v "$PROJECT_ROOT/data:/app/data" \
+    -v "$PROJECT_ROOT/config:/app/config:ro" \
+    -v "$PROJECT_ROOT/src:/app/src:ro" \
+    -v "$PROJECT_ROOT/scripts:/app/scripts:ro" \
+    panagiotispapadopoulos/zta-cloud-node:latest \
+    /app/scripts/setup/build_artifacts.py; then
+    
+    echo "🛑 FATAL: Artifact compilation failed! Aborting network boot."
+    exit 1
+fi
+
+echo "✅ Dataset Artifacts Verified!"
+
+# =========================================================
+# 4. FAB DEPLOYMENT DISPATCH
 # =========================================================
 pkill -f "flwr run" 2>/dev/null
 

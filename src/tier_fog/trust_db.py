@@ -6,6 +6,7 @@ class NodeState(TypedDict):
     score: float
     is_quarantined: bool
     recovery_streak: int
+    last_attestation_passed: bool
 
 
 class TrustDatabase:
@@ -28,7 +29,8 @@ class TrustDatabase:
             self._db[node_id] = {
                 "score": self.INIT_SCORE,
                 "is_quarantined": False,
-                "recovery_streak": 0
+                "recovery_streak": 0,
+                "last_attestation_passed": True
             }
             self.logger.debug(f"[TrustDB] Agent {display_name} registered into ledger. Init Score: {self.INIT_SCORE}", extra={"round": round_num})
 
@@ -40,6 +42,7 @@ class TrustDatabase:
             self.register_node(node_id, display_name, round_num)
 
         state = self._db[node_id]
+        state["last_attestation_passed"] = is_valid
 
         if not is_valid:
             self._apply_penalty(node_id, display_name, state, round_num)

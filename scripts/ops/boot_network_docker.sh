@@ -411,7 +411,7 @@ docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" logs -f > 
 PIDS+=($!)
 
 # =========================================================
-# 4.5 OFFLINE ZERO-TRUST NETWORK PROVISIONING (COLLECTOR)
+# 5 OFFLINE ZERO-TRUST NETWORK PROVISIONING (COLLECTOR)
 # =========================================================
 echo "================================================="
 echo " 🛡️  FACTORY PROVISIONING (COLLECTING STATES)     "
@@ -437,7 +437,7 @@ export PROJECT_ROOT="$PROJECT_ROOT"
 python3 "$PROJECT_ROOT/scripts/setup/collect_ledgers.py"
 
 # =================================================
-#  5. INJECTING GLOBAL CONFIGURATION (~/.flwr)     
+# 6. INJECTING GLOBAL CONFIGURATION (~/.flwr)     
 # =================================================
 FLWR_GLOBAL_DIR="$HOME/.flwr"
 mkdir -p "$FLWR_GLOBAL_DIR"

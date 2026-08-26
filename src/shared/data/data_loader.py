@@ -170,53 +170,28 @@ def get_dataset(
     simulate_global_leakage: bool = False, apply_smote: bool = True, split: str = "train",
     test_split: float = 0.30, val_split: float = 0.50   
 ):
-    global _MASTER_DATA_CACHE
-    cache_key = f"{dataset_name}_{simulate_global_leakage}_{apply_smote}_{split}"
-    if cache_key in _MASTER_DATA_CACHE:
-        return _MASTER_DATA_CACHE[cache_key]
-        
-    loaders = {
-        "edge_iiotset": load_edge_iiotset, "edge": load_edge_iiotset,
-        "cic_ids2017": load_cic_ids2017, "cic": load_cic_ids2017,
-        "unsw_nb15": load_unsw_nb15, "unsw": load_unsw_nb15
-    }
-    X_raw, y_raw = loaders[dataset_name](dataset_path)
-    target_features = DATASET_METADATA[dataset_name]["features"]
+    """
+    Consumer function: STRICTLY reads pre-compiled artifacts from disk.
+    Performs zero runtime mathematical processing.
+    """
+    import os
+    import torch
     
-    X_train, X_temp, y_train, y_temp = train_test_split(X_raw, y_raw, test_size=test_split, stratify=y_raw, random_state=random_seed)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=val_split, stratify=y_temp, random_state=random_seed)    
-    scaler = MinMaxScaler()
-    pca = PCA(n_components=target_features)
+    # We use this signature to find the correct file on disk
+    artifact_prefix = f"{dataset_name}_leakage_{simulate_global_leakage}_smote_{apply_smote}"
     
-    scaler.fit(X_train)
-    X_train_scaled = scaler.transform(X_train)
-    if X_train_scaled.shape[1] >= target_features:
-        pca.fit(X_train_scaled)
+    # Resolves to /app/data/{dataset_name}/artifacts/
+    base_dir = os.path.dirname(os.path.dirname(dataset_path)) 
+    artifact_path = os.path.join(base_dir, "artifacts", f"{artifact_prefix}_{split}.pt")
+    
+    if not os.path.exists(artifact_path):
+        raise FileNotFoundError(
+            f"CRITICAL: Dataset artifact missing at {artifact_path}. "
+            "The offline builder script was bypassed. Check boot_network_docker.sh."
+        )
         
-    if split == "train":
-        X_target, y_target = X_train_scaled, y_train
-    elif split == "val":
-        X_target, y_target = scaler.transform(X_val), y_val
-    elif split == "test":
-        X_target, y_target = scaler.transform(X_test), y_test
-
-    if X_target.shape[1] > target_features:
-        X_target = pca.transform(X_target).astype(np.float32)
-    elif X_target.shape[1] < target_features:
-        pad = np.zeros((X_target.shape[0], target_features - X_target.shape[1]), dtype=np.float32)
-        X_target = np.concatenate([X_target, pad], axis=1)
-
-    if apply_smote and split == "train":
-        smote = SMOTE(random_state=random_seed)
-        X_resampled, y_resampled = smote.fit_resample(X_target, y_target)
-    else:
-        X_resampled, y_resampled = X_target, y_target
-        
-    X_tensor = torch.tensor(X_resampled, dtype=torch.float32)
-    y_tensor = torch.tensor(y_resampled, dtype=torch.long)
-    result = (X_tensor, y_tensor, num_classes)
-    _MASTER_DATA_CACHE[cache_key] = result
-    return result
+    # Loads the tensor instantly into memory
+    return torch.load(artifact_path, weights_only=True)
 
 
 def non_iid_partition(X: torch.Tensor, y: torch.Tensor, n_agents: int, n_classes_per: int = 3, power_law_a: float = 0.4, seed: int = 42) -> List[Tuple[torch.Tensor, torch.Tensor]]:

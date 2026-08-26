@@ -15,7 +15,6 @@ from src.shared.data.data_loader import DATASET_METADATA, get_dataset, non_iid_p
 from src.shared.utils.logger_setup import setup_logger
 from src.shared.security.backdoor_math import poison_partition
 
-GLOBAL_DATA_CACHE = {}
 
 
 class Client(NumPyClient):
@@ -239,36 +238,29 @@ def client_fn(context: Context):
                 train_config["p_flip"] = float(run_config["p_flip"])
                 train_config["alpha"] = float(run_config["gradient_alpha"])
             
-            global GLOBAL_DATA_CACHE
-            
             apply_smote = run_config["apply_smote"]
             simulate_leakage = run_config["simulate_global_leakage"]
             n_classes_per = int(run_config["n_classes_per"])
 
-            cache_key = f"train_{dataset_name}_{dataset_fraction}_{simulate_leakage}_{apply_smote}"
+            # Fetch instantly from disk artifact
+            X_full, y_full, n_classes_eval = get_dataset(
+                dataset_name, dataset_path, num_classes, random_seed, 
+                simulate_global_leakage=simulate_leakage, 
+                apply_smote=apply_smote, split="train", 
+                test_split=test_split, val_split=val_split
+            )
                         
-            if cache_key not in GLOBAL_DATA_CACHE:
-                X_full, y_full, n_classes_eval = get_dataset(
-                    dataset_name, dataset_path, num_classes, random_seed, 
-                    simulate_global_leakage=simulate_leakage, 
-                    apply_smote=apply_smote, split="train", 
-                    test_split=test_split, val_split=val_split
-                )
-                    
-                generator = torch.Generator().manual_seed(random_seed)
-                indices = torch.randperm(len(X_full), generator=generator)
-                X_full = X_full[indices]
-                y_full = y_full[indices]
-
-                # Partition Dataset according to config parameters
-                if dataset_fraction < 1.0:
-                    subset_size = int(len(X_full) * dataset_fraction)
-                    X_full = X_full[:subset_size]
-                    y_full = y_full[:subset_size]
-                    
-                GLOBAL_DATA_CACHE[cache_key] = (X_full, y_full, n_classes_eval)
-            else:
-                X_full, y_full, n_classes_eval = GLOBAL_DATA_CACHE[cache_key]
+            # Shuffle globally before partitioning
+            generator = torch.Generator().manual_seed(random_seed)
+            indices = torch.randperm(len(X_full), generator=generator)
+            X_full = X_full[indices]
+            y_full = y_full[indices]
+            
+            # Fraction the dataset
+            if dataset_fraction < 1.0:
+                subset_size = int(len(X_full) * dataset_fraction)
+                X_full = X_full[:subset_size]
+                y_full = y_full[:subset_size]
 
             # Split the data across the edge devices to simulate real world data traffic from different devices
             power_law_a = float(run_config["power_law_a"])

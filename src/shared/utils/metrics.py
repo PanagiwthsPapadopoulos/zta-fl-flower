@@ -196,3 +196,10 @@ def compute_shap_stability(model: nn.Module, ref_model: nn.Module, X_val: torch.
     stability_scores = 1.0 - ((attrs_model_flat - attrs_ref_flat).norm(p=2, dim=1) / (attrs_ref_flat.norm(p=2, dim=1) + 1e-8))
     
     return float(stability_scores.mean().item())
+
+def roc_auc_multiclass(y_true: torch.Tensor, y_pred_probs: torch.Tensor, n_classes: int) -> float:
+    import torchmetrics.functional as tmf
+    # y_pred_probs must be raw probabilities (post-softmax), not argmax indices
+    y_true = y_true.long().flatten()
+    # Using 'macro' average and 'ovr' (One-vs-Rest) strategy
+    return float(tmf.auroc(y_pred_probs, y_true, task="multiclass", num_classes=n_classes, average="macro")) 

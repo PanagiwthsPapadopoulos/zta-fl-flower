@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from src.shared.utils.metrics import accuracy, macro_f1
+from src.shared.utils.metrics import accuracy, macro_f1, roc_auc_multiclass
 from src.shared.data.data_loader import get_dataset
 from src.shared.models.factory import get_model
 from src.shared.network.compression import decompress_weights
@@ -45,11 +45,15 @@ class GlobalEvaluator:
         self.criterion = nn.CrossEntropyLoss()
 
         # Load the evaluation dataset using the updated function signature
+        simulate_leakage = self.run_metadata["simulate_global_leakage"]
+        apply_smote = self.run_metadata["apply_smote"]
         self.test_data = get_dataset(
             dataset_name=self.dataset, 
             dataset_path=self.dataset_path, 
             num_classes=self.num_classes,
             random_seed=self.random_seed,
+            simulate_global_leakage=simulate_leakage,
+            apply_smote=apply_smote,
             split="test"
         )
         
@@ -80,6 +84,7 @@ class GlobalEvaluator:
         # 2. Run the evaluation loop
         total_loss = 0.0
         all_preds = []
+        all_probs = []
         all_targets = []
 
         with torch.no_grad():
@@ -87,10 +92,13 @@ class GlobalEvaluator:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
                 loss = self.criterion(outputs, targets)
-
                 total_loss += loss.item() * inputs.size(0)
+                
+                # Apply softmax to get probability distributions for AUC
+                probs = torch.nn.functional.softmax(outputs, dim=1)
+                all_probs.extend(probs.cpu().numpy())
+                
                 _, preds = torch.max(outputs, 1)
-
                 all_preds.extend(preds.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
 
@@ -98,10 +106,12 @@ class GlobalEvaluator:
         avg_loss = total_loss / len(self.test_loader.dataset)
         acc = accuracy(torch.tensor(all_targets), torch.tensor(all_preds))
         f1 = macro_f1(torch.tensor(all_targets), torch.tensor(all_preds))
+        auc = roc_auc_multiclass(torch.tensor(all_targets), torch.tensor(all_probs), self.num_classes)
 
         metrics = {
             "accuracy": acc,
-            "macro_f1": f1
+            "macro_f1": f1,
+            "auc": auc
         }
 
         self.logger.info(
