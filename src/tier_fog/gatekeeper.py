@@ -80,12 +80,19 @@ class ZeroTrustGatekeeper:
 
         try:
             token = json.loads(tpm_token_json)
+            tpm_id = token.get("IDi", str(client_proxy.cid))
+            display_identity = f"{tpm_id} ({untrusted_log_prefix})"
             
+            # Insecure Bypass
+            if self.tpm_engine.insecure_mode:
+                if self.trust_db:
+                    self.trust_db.process_attestation(tpm_id, display_identity, is_valid=True, round_num=server_round)
+                return True, tpm_id, display_identity
+
             id_file = os.path.join(folder_path, "tpm_id.txt")
             with open(id_file, "r") as f:
                 expected_tpm_id = f.read().strip()
-            
-            tpm_id = token.get("IDi", str(client_proxy.cid))
+                
             expected_pcr = current_ledger.get(expected_tpm_id)
             
             if not expected_pcr:

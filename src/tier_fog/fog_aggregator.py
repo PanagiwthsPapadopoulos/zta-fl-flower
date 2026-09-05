@@ -118,8 +118,8 @@ class FogAggregator(FedAvg):
         
         This function is called after receiving the model updates from clients."""
         # Check if no clients returned updates to return early
-        self.logger.info(f"{self.log_prefix} No client returned updates! Releasing IPC bridge with empty payload.", extra={"round": server_round})
         if not results:
+            self.logger.info(f"{self.log_prefix} No client returned updates! Releasing IPC bridge with empty payload.", extra={"round": server_round})
             self._relay_ipc_fog_bridge(None)
             return None, {}
 

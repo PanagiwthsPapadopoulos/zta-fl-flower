@@ -66,6 +66,7 @@ services:
     image: panagiotispapadopoulos/zta-cloud-node:latest
     environment: 
       - TZ=${HOST_TZ}
+      - ZTA_INSECURE_MODE=${INSECURE_MODE}
     command:
       - "--insecure"
       - "--plugin-type"
@@ -190,7 +191,7 @@ for i in $(seq 1 $NUM_FOGS); do
 
   fog-${i}-serverapp:
     image: panagiotispapadopoulos/zta-cloud-node:latest
-    environment: [TZ=${HOST_TZ}, IPC_PORT=${FOG_SA}]
+    environment: [TZ=${HOST_TZ}, IPC_PORT=${FOG_SA}, ZTA_INSECURE_MODE=${INSECURE_MODE}]
     command:
       - "--insecure"
       - "--plugin-type"
@@ -255,6 +256,7 @@ EOF
     environment: 
       - TZ=${HOST_TZ}
       - TPM2TOOLS_TCTI=swtpm:port=2321
+      - ZTA_INSECURE_MODE=${INSECURE_MODE}
     command:
       - "--insecure"
       - "--plugin-type"
