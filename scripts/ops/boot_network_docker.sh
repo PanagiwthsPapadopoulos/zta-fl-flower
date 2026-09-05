@@ -15,6 +15,23 @@
 # Default to secure mode (TLS/mTLS)
 INSECURE_MODE=false
 
+# =========================================================
+# PRE-FLIGHT CHECKS
+# =========================================================
+# Validate Dependencies
+for cmd in docker python3; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "FATAL: Required binary '$cmd' is not installed or not in PATH."
+        exit 1
+    fi
+done
+
+# Validate Docker Daemon
+if ! docker info >/dev/null 2>&1; then
+    echo "FATAL: Docker daemon is not running or accessible."
+    exit 1
+fi
+
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --insecure) INSECURE_MODE=true ;;
@@ -26,12 +43,12 @@ done
 # =========================================================
 # PATH & ENVIRONMENT CONFIGURATION
 # =========================================================
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
-LOG_DIR="$PROJECT_ROOT/logs"
-CERTS_DIR="$PROJECT_ROOT/runtime/certs"
-NGINX_CONF="$PROJECT_ROOT/runtime/nginx.conf"
+export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+export COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
+export LOG_DIR="$PROJECT_ROOT/logs"
+export CERTS_DIR="$PROJECT_ROOT/runtime/certs"
+export NGINX_CONF="$PROJECT_ROOT/runtime/nginx.conf"
 
 # Dynamically determine a safe Compose project name based on the root directory
 PROJECT_DIR_NAME=$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
@@ -45,6 +62,7 @@ PIDS=()
 cleanup() {
     echo -e "\n🛑 Caught Shutdown Signal (Ctrl+C / Ctrl+Z)! Shutting down the Docker Engine..."
     docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down --remove-orphans 2>/dev/null
+    rm -f "$PROJECT_ROOT/runtime/infra/.network_ready"
     echo "✅ Teardown complete. Network is offline."
     exit 0
 }
@@ -62,48 +80,17 @@ fi
 echo "================================================="
 echo " 🔍 READING TOPOLOGY FROM network.yaml           "
 echo "================================================="
-CONFIG_VARS=$(python3 - <<EOF
-import re, ast
 
-def get_yaml_val(filepath, key, default):
-    """Safely extracts YAML values using regex to avoid external host OS dependencies."""
-    try:
-        with open(filepath, 'r') as f:
-            content = f.read()
-        # Matches key: value, stripping out inline comments and quotes
-        m = re.search(fr'^{key}:\s*(.+)$', content, re.MULTILINE)
-        if m:
-            return m.group(1).split('#')[0].strip().strip('"').strip("'")
-    except:
-        pass
-    return default
+# Execute the standalone Python parser
+CONFIG_VARS=$(python3 "$PROJECT_ROOT/scripts/setup/parse_topology.py")
 
-net_conf = '$PROJECT_ROOT/config/network.yaml'
+# Ensure the script didn't fail before evaluating
+if [ $? -ne 0 ]; then
+    echo "$CONFIG_VARS"
+    exit 1
+fi
 
-try:
-    print(f"CLOUD_SA={get_yaml_val(net_conf, 'cloud_sa_port', '9001')}")
-    print(f"CLOUD_FL={get_yaml_val(net_conf, 'cloud_fl_port', '9002')}")
-    print(f"CLOUD_CTRL={get_yaml_val(net_conf, 'cloud_ctrl_port', '9003')}")
-    print(f"FOG_SA_BASE={get_yaml_val(net_conf, 'fog_sa_base', '9100')}")
-    print(f"FOG_FL_BASE={get_yaml_val(net_conf, 'fog_fl_base', '9200')}")
-    print(f"FOG_CTRL_BASE={get_yaml_val(net_conf, 'fog_ctrl_base', '9300')}")
-    print(f"FOG_CIO_BASE={get_yaml_val(net_conf, 'fog_client_io_base', '9400')}")
-    print(f"EDGE_CIO_BASE={get_yaml_val(net_conf, 'edge_client_io_base', '10000')}")
-
-    num_fogs = int(get_yaml_val(net_conf, 'num_fogs', '2'))
-    uniform = int(get_yaml_val(net_conf, 'uniform_edges_per_fog', '2'))
-    
-    custom_top_str = get_yaml_val(net_conf, 'custom_fog_topology', '[]')
-    custom_top = ast.literal_eval(custom_top_str) if custom_top_str else []
-    
-    edges_array = custom_top[:num_fogs] if custom_top and len(custom_top) >= num_fogs else [uniform] * num_fogs
-    
-    print(f"NUM_FOGS={num_fogs}")
-    print(f"EDGES_PER_FOG_ARRAY=({' '.join(map(str, edges_array))})")
-except Exception as e:
-    print(f'echo "Error parsing topology: {e}"; exit 1')
-EOF
-)
+# Inject variables into the bash environment
 eval "$CONFIG_VARS"
 
 # =========================================================
@@ -141,272 +128,23 @@ fi
 # 3. DOCKER COMPOSE TOPOLOGY GENERATION
 # =========================================================
 
-# Global Mount Variables 
-SHARED_DATA_MOUNT="./data"
-SHARED_CONFIG_MOUNT="./config"
-SHARED_RESULTS_MOUNT="./results"
-
-# Cloud Mount Variables
-CLOUD_LOG_MOUNT="./logs/nodes/cloud"
-
-cat <<EOF > "$COMPOSE_FILE"
-name: ${COMPOSE_PROJECT_NAME}
-
-networks:
-  flwr-network:
-    driver: bridge
-
-services:
-  # ---------------------------------------------------------
-  # TIER 1: CLOUD INFRASTRUCTURE
-  # ---------------------------------------------------------
-  cloud-superlink:
-    image: flwr/superlink:1.30.0
-    command:
-      - "--isolation"
-      - "process"
-      - "--serverappio-api-address"
-      - "0.0.0.0:${CLOUD_SA}"
-      - "--fleet-api-address"
-      - "0.0.0.0:${CLOUD_FL}"
-      - "--control-api-address"
-      - "0.0.0.0:${CLOUD_CTRL}"
-EOF
-
-if [ "$INSECURE_MODE" = false ]; then
-cat <<EOF >> "$COMPOSE_FILE"
-      - "--ssl-certfile=/app/certs/cloud_server/certificates.pem"
-      - "--ssl-keyfile=/app/certs/cloud_server/private-key.pem"
-      - "--ssl-ca-certfile=/app/certs/cloud_ca/ca.crt"
-    volumes:
-      - ${CLOUD_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data
-      - "$CERTS_DIR:/app/certs:ro"
-EOF
-else
-cat <<EOF >> "$COMPOSE_FILE"
-      - "--insecure"
-    volumes:
-      - ${CLOUD_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data
-EOF
-fi
-
-cat <<EOF >> "$COMPOSE_FILE"
-    networks: [flwr-network]
-    ports: 
-      - "${CLOUD_CTRL}:${CLOUD_CTRL}"
-
-  cloud-serverapp:
-    image: panagiotispapadopoulos/zta-cloud-node:latest
-    environment: 
-      - TZ=${HOST_TZ}
-    command:
-      - "--insecure" # Internal Docker ServerAppIo traffic is ALWAYS plaintext
-      - "--plugin-type"
-      - "serverapp"
-      - "--appio-api-address"
-      - "cloud-superlink:${CLOUD_SA}"
-    networks: [flwr-network]
-    depends_on: [cloud-superlink]
-    volumes:
-      - ${CLOUD_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data
-      - ${SHARED_RESULTS_MOUNT}:/app/results
-      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
-EOF
-
-if [ "$INSECURE_MODE" = false ]; then
-    cat <<EOF >> "$COMPOSE_FILE"
-
-  nginx-proxy:
-    image: nginx:alpine
-    volumes: 
-      - "$NGINX_CONF:/etc/nginx/nginx.conf:ro"
-      - "$CERTS_DIR:/etc/nginx/certs:ro"
-    networks: [flwr-network]
-    ports: ["9200-9300:9200-9300"]
-EOF
-fi
-
-for i in $(seq 1 $NUM_FOGS); do
-    FOG_SA=$((FOG_SA_BASE + i))
-    FOG_FL=$((FOG_FL_BASE + i))
-    FOG_CTRL=$((FOG_CTRL_BASE + i))
-    FOG_CLIENT_IO=$((FOG_CIO_BASE + i))
-    CURRENT_EDGES=${EDGES_PER_FOG_ARRAY[$((i-1))]:-0}
-    
-    # Fog Mount Variable 
-    FOG_LOG_MOUNT="./logs/nodes/fog_${i}"
-    
-    if [ "$INSECURE_MODE" = false ]; then
-        FOG_INTERNAL_FL=$((FOG_FL_BASE + 10000 + i))
-    else
-        FOG_INTERNAL_FL=$FOG_FL
-    fi
-
-    cat <<EOF >> "$COMPOSE_FILE"
-
-  # ---------------------------------------------------------
-  # TIER 2: FOG ${i} INFRASTRUCTURE
-  # ---------------------------------------------------------
-  fog-${i}-supernode:
-    image: flwr/supernode:1.30.0
-    environment:
-      - TZ=${HOST_TZ}
-    command:
-      - "--isolation"
-      - "process"
-      - "--superlink"
-      - "cloud-superlink:${CLOUD_FL}"
-      - "--clientappio-api-address"
-      - "0.0.0.0:${FOG_CLIENT_IO}"
-      - "--node-config"
-      - "fog_id=${i}"
-EOF
-    if [ "$INSECURE_MODE" = false ]; then
-    cat <<EOF >> "$COMPOSE_FILE"
-      - "--root-certificates=/app/certs/cloud_ca/ca.crt" # Secure Uplink to Cloud
-    volumes:
-      - ${FOG_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data:ro
-      - "$CERTS_DIR:/app/certs:ro"
-EOF
-    else
-    cat <<EOF >> "$COMPOSE_FILE"
-      - "--insecure"
-    volumes:
-      - ${FOG_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data:ro
-EOF
-    fi
-    cat <<EOF >> "$COMPOSE_FILE"
-    networks: [flwr-network]
-    depends_on: [cloud-superlink]
-
-  fog-${i}-clientapp:
-    image: panagiotispapadopoulos/zta-cloud-node:latest
-    environment: [TZ=${HOST_TZ}, FOG_SERVER_HOST=fog-${i}-serverapp, IPC_PORT=${FOG_CLIENT_IO}]
-    command:
-      - "--insecure" # Internal Docker ClientAppIo traffic is ALWAYS plaintext
-      - "--plugin-type"
-      - "clientapp"
-      - "--appio-api-address"
-      - "fog-${i}-supernode:${FOG_CLIENT_IO}"
-    networks: [flwr-network]
-    depends_on: [fog-${i}-supernode]
-    volumes:
-      - ${FOG_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data:ro
-      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
-
-  fog-${i}-superlink:
-    image: flwr/superlink:1.30.0
-    environment:
-      - TZ=${HOST_TZ}
-    command:
-      - "--isolation"
-      - "process"
-      - "--insecure" # ALWAYS insecure because NGINX handles external TLS wrapper
-      - "--serverappio-api-address"
-      - "0.0.0.0:${FOG_SA}"
-      - "--fleet-api-address"
-      - "0.0.0.0:${FOG_INTERNAL_FL}"
-      - "--control-api-address"
-      - "0.0.0.0:${FOG_CTRL}"
-    networks: [flwr-network]
-    ports: 
-      - "${FOG_CTRL}:${FOG_CTRL}"
-    volumes:
-      - ${FOG_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data:ro
-
-  fog-${i}-serverapp:
-    image: panagiotispapadopoulos/zta-cloud-node:latest
-    environment: [TZ=${HOST_TZ}, IPC_PORT=${FOG_SA}]
-    command:
-      - "--insecure" # Internal Docker ServerAppIo traffic is ALWAYS plaintext
-      - "--plugin-type"
-      - "serverapp"
-      - "--appio-api-address"
-      - "fog-${i}-superlink:${FOG_SA}"
-    networks: [flwr-network]
-    depends_on: [fog-${i}-superlink]
-    volumes:
-      - ${FOG_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data:ro
-      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
-      - ./runtime/tpm_state:/app/runtime/tpm_state:rw
-      - ${SHARED_RESULTS_MOUNT}:/app/results
-EOF
-
-    if [ "$CURRENT_EDGES" -gt 0 ]; then
-        for j in $(seq 1 "$CURRENT_EDGES"); do
-            EDGE_CLIENT_IO=$((EDGE_CIO_BASE + (i * 100) + j))
-            EDGE_PROXY_PORT=$((FOG_FL_BASE + 20000 + (i * 100) + j))
-            
-            # Edge Mount Variable 
-            EDGE_LOG_MOUNT="./logs/nodes/edge_${i}_${j}"
-            
-            if [ "$INSECURE_MODE" = false ]; then
-                EDGE_UPLINK="nginx-proxy:${EDGE_PROXY_PORT}"
-            else
-                EDGE_UPLINK="fog-${i}-superlink:${FOG_INTERNAL_FL}"
-            fi
-
-            cat <<EOF >> "$COMPOSE_FILE"
-
-  # ---------------------------------------------------------
-  # TIER 3: EDGE ${j} FOR FOG ${i} (TPM ENABLED)
-  # ---------------------------------------------------------
-  edge-${i}-${j}-supernode:
-    image: flwr/supernode:1.30.0
-    environment:
-      - TZ=${HOST_TZ}
-    command:
-      - "--isolation"
-      - "process"
-      - "--insecure" # ALWAYS insecure because it talks to the plaintext port of the local NGINX sidecar
-      - "--superlink"
-      - "${EDGE_UPLINK}"
-      - "--clientappio-api-address"
-      - "0.0.0.0:${EDGE_CLIENT_IO}"
-      - "--node-config"
-      - "fog_num=${i} partition-id=${j}"
-    networks: [flwr-network]
-    depends_on: [fog-${i}-superlink]
-    volumes:
-      - ${EDGE_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data:ro
-
-  edge-${i}-${j}-clientapp:
-    image: panagiotispapadopoulos/zta-edge-node:latest
-    environment: 
-      - TZ=${HOST_TZ}
-      - TPM2TOOLS_TCTI=swtpm:port=2321
-    command:
-      - "--insecure" # Internal Docker ClientAppIo traffic is ALWAYS plaintext
-      - "--plugin-type"
-      - "clientapp"
-      - "--appio-api-address"
-      - "edge-${i}-${j}-supernode:${EDGE_CLIENT_IO}"
-    networks: [flwr-network]
-    depends_on: [edge-${i}-${j}-supernode]
-    volumes:
-      - ${EDGE_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data:ro
-      - ./runtime/tpm_state/edge_${i}_${j}:/app/runtime/tpm_state/edge_${i}_${j}
-      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
-EOF
-        done
-    fi
-done
+echo "  Generating dynamic docker-compose.yml..."
+chmod +x "$PROJECT_ROOT/scripts/setup/generate_compose.sh"
+"$PROJECT_ROOT/scripts/setup/generate_compose.sh" "$INSECURE_MODE" "$HOST_TZ" "${EDGES_PER_FOG_ARRAY[*]}"
 
 # =================================================
 #  4. BOOTING DOCKER FEDERATION                    
 # =================================================
 cd "$PROJECT_ROOT" || exit 1
-docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" up -d
+
+echo "  Starting Docker Compose network and waiting for health checks..."
+
+if ! docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" up -d --wait; then
+    echo "❌ FATAL: Network failed to boot or health checks timed out."
+    docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down
+    exit 1
+fi
+
 docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" logs -f > "$LOG_DIR/system/docker_mesh.log" 2>&1 &
 PIDS+=($!)
 
@@ -423,17 +161,11 @@ for nodes in "${EDGES_PER_FOG_ARRAY[@]}"; do
     TOTAL_EDGES=$((TOTAL_EDGES + nodes))
 done
 
-# Calculate the total wait time
-WAIT_TIME=$((TOTAL_EDGES * 2))
+# Export variables so the Python script knows what to look for and how many to wait for
+export TOTAL_EDGES="$TOTAL_EDGES"
 
-# Wait a proportionate amount of time
-echo "⏳ Waiting ${WAIT_TIME} seconds for container TPM boot sequences to complete..."
-sleep "${WAIT_TIME}"
-
-# Export the project root so the Python script knows where to look
-export PROJECT_ROOT="$PROJECT_ROOT"
-
-# Execute the decoupled script
+echo "  Polling for $TOTAL_EDGES Edge container TPM boot sequences to complete..."
+# Execute the decoupled script (which now handles its own deterministic polling)
 python3 "$PROJECT_ROOT/scripts/setup/collect_ledgers.py"
 
 # =================================================
@@ -478,4 +210,9 @@ done
 
 echo ""
 echo "✅ ENGINE IS LIVE. RUN DEPLOY_CODE_DOCKER.SH"
+
+# Create the state flag indicating the network is ready
+mkdir -p "$PROJECT_ROOT/runtime/infra"
+touch "$PROJECT_ROOT/runtime/infra/.network_ready"
+
 wait

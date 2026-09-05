@@ -21,11 +21,11 @@ class ZeroTrustGatekeeper:
             self.tpm_engine = TPMVerifier(logger=self.logger, insecure_mode=insecure_flag)
             self.trust_db = TrustDatabase(logger=self.logger) 
         except Exception as e:
-            self.logger.error(f"{self.log_prefix} [GATEKEEPER] Initialization failed: {e}", extra={"round": current_round})
+            self.logger.error(f"{self.log_prefix} [GATEKEEPER] Initialization failed: {e}", extra={"round": 0})
             self.tpm_engine = None
             self.trust_db = None
 
-    def get_live_ledger(self) -> dict:
+    def get_live_ledger(self, server_round: int) -> dict:
         """STRICT READ-ONLY SSOT: Reads the unified Admin ledger directly from the mounted Docker volume."""
         ledger_path = os.path.join(self.tpm_state_root, "pcr_ledger.json")
         if os.path.exists(ledger_path):
@@ -47,7 +47,7 @@ class ZeroTrustGatekeeper:
     def filter_node_updates(self, tier: str, server_round: int, results: list, active_nonces: dict) -> list:
         """Filters incoming client model updates based on real-time cryptographic attestation and ledger verification."""
         trusted_results = []
-        current_ledger = self.get_live_ledger()
+        current_ledger = self.get_live_ledger(server_round)
         
         for client_proxy, fit_res in results:
             if tier == "cloud":
@@ -89,7 +89,7 @@ class ZeroTrustGatekeeper:
             expected_pcr = current_ledger.get(expected_tpm_id)
             
             if not expected_pcr:
-                self.logger.error(f"{self.log_prefix} 🛑 Unauthorized Device! ID {expected_tpm_id} is missing from the Admin ledger.", extra={"round": current_round})
+                self.logger.error(f"{self.log_prefix} 🛑 Unauthorized Device! ID {expected_tpm_id} is missing from the Admin ledger.", extra={"round": server_round})
                 return False, tpm_id, untrusted_log_prefix
             
             pubkey_path = os.path.join(folder_path, "ak.pub")
@@ -111,5 +111,5 @@ class ZeroTrustGatekeeper:
             return authenticated, tpm_id, display_identity
 
         except Exception as e:
-            self.logger.error(f"Stateless verification error for {untrusted_log_prefix}: {e}", extra={"round": current_round})
+            self.logger.error(f"Stateless verification error for {untrusted_log_prefix}: {e}", extra={"round": server_round})
             return False, "UNKNOWN", untrusted_log_prefix

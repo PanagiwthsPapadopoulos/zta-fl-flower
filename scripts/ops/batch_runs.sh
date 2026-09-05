@@ -103,11 +103,19 @@ for run_path in "$QUEUE_DIR"/*/; do
     echo "================================================="
 
     # 1. State Reset & Config Hot-Swap
-    echo "📦 Backing up baseline configs..."
+    echo "  Backing up baseline configs..."
     cp -r config/ config_backup/
     
-    echo "🔄 Injecting YAML overrides from $RUN_NAME..."
-    cp -r "$run_path"*.yaml config/ 2>/dev/null || true
+    echo "  Injecting YAML overrides from $RUN_NAME..."
+    # Validate configuration existence to prevent infinite baseline loops
+    if ! ls "$run_path"*.yaml >/dev/null 2>&1; then
+        echo "  WARNING: No YAML files found in $run_path. Marking as MISCONFIGURED."
+        echo "$RUN_NAME: MISCONFIGURED" >> "$STATUS_FILE"
+        rm -rf config/
+        mv config_backup/ config/
+        continue
+    fi
+    cp -r "$run_path"*.yaml config/
 
     # Extract target rounds dynamically (Aggressively sanitized)
     TARGET_ROUNDS=$(grep "num_rounds:" config/training.yaml | awk -F':' '{print $2}' | cut -d'#' -f1 | tr -d ' \r\n' || echo "0")

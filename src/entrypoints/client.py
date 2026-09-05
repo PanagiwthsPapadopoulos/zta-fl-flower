@@ -88,7 +88,7 @@ class Client(NumPyClient):
                 "dataset_metadata": self.dataset_metadata,
                 "payload_params_count": len(parameters) if parameters else 0
             }
-            self.logger.debug(f"Variable Dump (ROUND {current_round}): {json.dumps(round_dump, indent=2, default=str)}")
+            self.logger.debug(f"Variable Dump (ROUND {current_round}): {json.dumps(round_dump, indent=2, default=str)}", extra={"round": current_round})
             
             if self.node_type == "fog_client":
                 from src.tier_edge.fog_bridge_client import FogBridgeClient

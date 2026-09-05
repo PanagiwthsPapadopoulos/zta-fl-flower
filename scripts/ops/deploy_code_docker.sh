@@ -13,18 +13,46 @@ PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 LOG_DIR="$PROJECT_ROOT/logs"
 
 # =========================================================
-# 1. ORPHAN PROCESS CLEANUP
+# PRE-FLIGHT DEPENDENCY & HEALTH CHECK
 # =========================================================
-CONTAINERS=$(docker ps --format "{{.Names}}")
-for container in $CONTAINERS; do
-    if [[ "$container" == *"serverapp"* ]] || [[ "$container" == *"clientapp"* ]]; then
-        echo "  Cleaning $container..."
-        docker exec "$container" pkill -9 -f python 2>/dev/null
-    fi
-done
+# Check for the state flag
+if [ ! -f "$PROJECT_ROOT/runtime/infra/.network_ready" ]; then
+    echo "❌ FATAL: The SuperLink network is not running or failed to boot."
+    echo "   Please run 'boot_network_docker.sh' first and wait for the success message."
+    exit 1
+fi
+
+# Verify Docker containers are actively running for this project
+COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
+
+# Get a list of running container IDs for this specific compose file
+RUNNING_CONTAINERS=$(docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" ps --status running -q 2>/dev/null)
+
+if [ -z "$RUNNING_CONTAINERS" ]; then
+    echo "❌ FATAL: State mismatch detected. The lock file exists, but the Docker network is offline."
+    echo "   Cleaning up stale lock file..."
+    rm -f "$PROJECT_ROOT/runtime/.network_ready"
+    echo "   Please run 'boot_network_docker.sh' to boot the network."
+    exit 1
+fi
+
+# Helper function for polling a port
+wait_for_port() {
+    local host=$1
+    local port=$2
+    for i in {1..30}; do
+        if nc -z "$host" "$port" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timeout waiting for $host:$port"
+    exit 1
+}
+
 
 # =========================================================
-# 2. LOG ROTATION & TOPOLOGY ANALYSIS
+# 1. LOG ROTATION & TOPOLOGY ANALYSIS
 # =========================================================
 mkdir -p "$LOG_DIR/system"
 find "$LOG_DIR/nodes/" -type f -delete 2>/dev/null
@@ -38,41 +66,8 @@ cd "$PROJECT_ROOT" || exit 1
 # timestamp to perfectly synchronize their directory names.
 touch config/training.yaml
 
-CONFIG_VARS=$(python3 - <<EOF
-import re, ast
-
-def get_yaml_val(filepath, key, default):
-    """Safely extracts YAML values using regex to avoid external host OS dependencies."""
-    try:
-        with open(filepath, 'r') as f:
-            content = f.read()
-        m = re.search(fr'^{key}:\s*(.+)$', content, re.MULTILINE)
-        if m:
-            return m.group(1).split('#')[0].strip().strip('"').strip("'")
-    except:
-        pass
-    return default
-
-net_conf = 'config/network.yaml'
-
-try:
-    print(f"CLOUD_CTRL={get_yaml_val(net_conf, 'cloud_ctrl_port', '9003')}")
-    print(f"FOG_CTRL_BASE={get_yaml_val(net_conf, 'fog_ctrl_base', '9300')}")
-
-    num_fogs = int(get_yaml_val(net_conf, 'num_fogs', '2'))
-    uniform = int(get_yaml_val(net_conf, 'uniform_edges_per_fog', '2'))
-    
-    custom_top_str = get_yaml_val(net_conf, 'custom_fog_topology', '[]')
-    custom_top = ast.literal_eval(custom_top_str) if custom_top_str else []
-    
-    edges_arr = custom_top[:num_fogs] if custom_top and len(custom_top) >= num_fogs else [uniform] * num_fogs
-    
-    print(f"NUM_FOGS={num_fogs}")
-    print(f"EDGES_PER_FOG_ARRAY=({' '.join(map(str, edges_arr))})")
-except Exception as e:
-    pass
-EOF
-)
+# Execute the standalone Python parser
+CONFIG_VARS=$(python3 "$PROJECT_ROOT/scripts/setup/parse_topology.py")
 eval "$CONFIG_VARS"
 
 echo "================================================="
@@ -124,7 +119,7 @@ for i in $(seq 1 $NUM_FOGS); do
 done
 
 # =========================================================
-# 3. ARTIFACT BUILDER (THE "BIG CRUNCH")
+# 2. ARTIFACT BUILDER (THE "BIG CRUNCH")
 # =========================================================
 echo "================================================="
 echo " 🧱 COMPILING DATASET ARTIFACTS (IF MISSING)      "
@@ -146,7 +141,7 @@ fi
 echo "✅ Dataset Artifacts Verified!"
 
 # =========================================================
-# 4. FAB DEPLOYMENT DISPATCH
+# 3. FAB DEPLOYMENT DISPATCH
 # =========================================================
 pkill -f "flwr run" 2>/dev/null
 
@@ -162,11 +157,13 @@ for i in $(seq 1 $NUM_FOGS); do
     CURRENT_EDGES=${EDGES_PER_FOG_ARRAY[$((i-1))]:-0}
     SAFE_MIN_CLIENTS=$(( CURRENT_EDGES > 0 ? CURRENT_EDGES : 1 ))
     
+    FOG_CTRL=$((FOG_CTRL_BASE + i))
+    
     echo "Shipping FAB to Fog $i (Expecting $CURRENT_EDGES edges)..."
     flwr run . fog${i} --run-config "tier=\"fog\" min-clients=${SAFE_MIN_CLIENTS} fog_id=\"fog_${i}\"" --stream > "$LOG_DIR/system/run_fog${i}.log" 2>&1 &
 
     echo "  ⏳ Cooling down Fog $i stack..."
-    sleep 3
+    wait_for_port 127.0.0.1 $FOG_CTRL
 done
 
 sleep 2

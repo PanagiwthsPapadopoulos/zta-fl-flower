@@ -39,7 +39,7 @@ def setup_logger(node_id: str):
         logger.addFilter(FederatedContextFilter(node_id))
     
     if not logger.handlers:
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(JSONFormatter())
         logger.addHandler(file_handler)
