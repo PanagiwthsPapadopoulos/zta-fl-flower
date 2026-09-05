@@ -8,8 +8,8 @@
 #   certificates via mTLS, and boots the infrastructure layer.
 #
 # ARGUMENTS:
-#   --insecure : Optional. Disables mTLS and runs all 
-#                services in plain-text mode.
+#   --insecure : Optional. Disables mTLS and TLS and  
+#                runs all services in plain-text mode.
 # =========================================================
 
 # Default to secure mode (TLS/mTLS)
@@ -43,12 +43,14 @@ done
 # =========================================================
 # PATH & ENVIRONMENT CONFIGURATION
 # =========================================================
+mkdir -p "$PROJECT_ROOT/runtime/infra"
+
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 export COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
 export LOG_DIR="$PROJECT_ROOT/logs"
 export CERTS_DIR="$PROJECT_ROOT/runtime/certs"
-export NGINX_CONF="$PROJECT_ROOT/runtime/nginx.conf"
+export NGINX_CONF="$PROJECT_ROOT/runtime/infra/nginx.conf"
 
 # Dynamically determine a safe Compose project name based on the root directory
 PROJECT_DIR_NAME=$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
@@ -177,22 +179,12 @@ mkdir -p "$FLWR_GLOBAL_DIR"
 cat <<EOF > "$FLWR_GLOBAL_DIR/config.toml"
 [superlink.cloud]
 address = "127.0.0.1:$CLOUD_CTRL"
-insecure = ${INSECURE_MODE}
-EOF
+insecure = true
 
-if [ "$INSECURE_MODE" = false ]; then
-    echo "root-certificates = \"$CERTS_DIR/cloud_ca/ca.crt\"" >> "$FLWR_GLOBAL_DIR/config.toml"
-fi
-
-cat <<EOF >> "$FLWR_GLOBAL_DIR/config.toml"
 [federation.cloud]
 address = "127.0.0.1:$CLOUD_CTRL"
-insecure = ${INSECURE_MODE}
+insecure = true
 EOF
-
-if [ "$INSECURE_MODE" = false ]; then
-    echo "root-certificates = \"$CERTS_DIR/cloud_ca/ca.crt\"" >> "$FLWR_GLOBAL_DIR/config.toml"
-fi
 
 for i in $(seq 1 $NUM_FOGS); do
     FOG_CTRL=$((FOG_CTRL_BASE + i))
@@ -212,7 +204,6 @@ echo ""
 echo "✅ ENGINE IS LIVE. RUN DEPLOY_CODE_DOCKER.SH"
 
 # Create the state flag indicating the network is ready
-mkdir -p "$PROJECT_ROOT/runtime/infra"
 touch "$PROJECT_ROOT/runtime/infra/.network_ready"
 
 wait

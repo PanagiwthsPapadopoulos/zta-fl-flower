@@ -37,11 +37,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 CERTS_DIR="$PROJECT_ROOT/runtime/certs"
 LOG_DIR="$PROJECT_ROOT/logs/system"
-NGINX_CONF="$PROJECT_ROOT/runtime/nginx.conf"
+export NGINX_CONF="$PROJECT_ROOT/runtime/infra/nginx.conf"
 
 # =========================================================
 # DYNAMIC PATH & BINDING RESOLUTION
 # =========================================================
+# Inherit CLOUD_FL from the environment (set by parse_topology.py), default to 9002
+CLOUD_FL=${CLOUD_FL:-9002}
+
 if [ "$IS_DOCKER" = "true" ]; then
     CONF_CERTS_DIR="/etc/nginx/certs"
     CONF_PID="/var/run/nginx.pid"
@@ -50,6 +53,7 @@ if [ "$IS_DOCKER" = "true" ]; then
     CONF_ERROR_LOG="/var/log/nginx/error.log"
     # Docker sidecars must bind to 0.0.0.0 to accept traffic from Edge containers
     SIDECAR_BIND=""
+    CLOUD_UPSTREAM="cloud-superlink"
 else
     CONF_CERTS_DIR="$CERTS_DIR"
     CONF_PID="$LOG_DIR/nginx.pid"
@@ -57,6 +61,7 @@ else
     CONF_ERROR_LOG="$LOG_DIR/nginx_error.log"
     # Local Mac sidecars bind securely to localhost
     SIDECAR_BIND="127.0.0.1:"
+    CLOUD_UPSTREAM="$BROKER_IP"
 fi
 
 echo "[DEBUG NGINX] Creating NGINX Conf at: $NGINX_CONF"
@@ -80,6 +85,29 @@ http {
 
 EOF
 
+# =========================================================
+# CLOUD TIER: STANDARD TLS TERMINATION
+# =========================================================
+echo "[DEBUG NGINX] Writing Cloud Proxy - Public Port: $CLOUD_FL -> Internal: 1${CLOUD_FL}"
+
+cat <<EOF >> "$NGINX_CONF"
+    server {
+        listen $CLOUD_FL ssl;
+        http2 on;
+        server_name $BROKER_IP localhost cloud-superlink;
+
+        # Standard TLS Server Identity
+        ssl_certificate $CONF_CERTS_DIR/cloud_server/certificates.pem;
+        ssl_certificate_key $CONF_CERTS_DIR/cloud_server/private-key.pem;
+        ssl_protocols TLSv1.3;
+
+        location / {
+            # Route authenticated traffic to the insecure internal Cloud server
+            grpc_pass grpc://$CLOUD_UPSTREAM:1${CLOUD_FL};
+        }
+    }
+EOF
+
 # Generate server blocks mapping Edge traffic to respective Fog backend ports
 for i in $(seq 1 "$NUM_FOGS"); do
     FOG_FL=$((FOG_FL_BASE + i))
@@ -99,6 +127,33 @@ for i in $(seq 1 "$NUM_FOGS"); do
     fi
 
     echo "[DEBUG NGINX] Writing Fog $i - Public Port: $FOG_FL -> Internal: $FOG_INTERNAL_FL"
+
+    # =========================================================
+    # FOG OUTBOUND TIER: STANDARD TLS SIDECAR (TO CLOUD)
+    # =========================================================
+    CLOUD_PROXY_PORT=$((CLOUD_FL + 20000 + i))
+    
+    echo "[DEBUG NGINX] Writing Fog $i Outbound Sidecar - Local Port: $CLOUD_PROXY_PORT -> Secure Cloud: $CLOUD_FL"
+    
+    cat <<EOF >> "$NGINX_CONF"
+    server {
+        listen ${SIDECAR_BIND}$CLOUD_PROXY_PORT;
+        http2 on;
+        server_name localhost;
+
+        location / {
+            # Upstream target: Secure Cloud port
+            grpc_pass grpcs://$SIDECAR_UPSTREAM:$CLOUD_FL;
+            
+            # Verify the Cloud server against the Cloud CA (Standard TLS)
+            # Notice: No client certificate is provided here.
+            grpc_ssl_trusted_certificate $CONF_CERTS_DIR/cloud_ca/ca.crt;
+            grpc_ssl_verify on;
+            grpc_ssl_server_name on;
+            grpc_ssl_name cloud-superlink;
+        }
+    }
+EOF
 
     # Fog reverse proxy server block for mTLS termination
     cat <<EOF >> "$NGINX_CONF"

@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # =========================================================
 # generate_compose.sh
 # Generates the docker-compose.yml file dynamically based
@@ -14,6 +15,16 @@ SHARED_DATA_MOUNT="./data"
 SHARED_CONFIG_MOUNT="./config"
 SHARED_RESULTS_MOUNT="./results"
 CLOUD_LOG_MOUNT="./logs/nodes/cloud"
+
+# Explicitly create directory to prevent Mac Docker VM sync race conditions
+mkdir -p "$PROJECT_ROOT/logs/nodes/cloud"
+
+# Dynamic Cloud Port Resolution
+if [ "$INSECURE_MODE" = false ]; then
+    INTERNAL_CLOUD_FL="1${CLOUD_FL}"
+else
+    INTERNAL_CLOUD_FL="${CLOUD_FL}"
+fi
 
 cat <<EOF> "$COMPOSE_FILE"
 name: "zta-fl"
@@ -31,34 +42,16 @@ services:
     command:
       - "--isolation"
       - "process"
+      - "--insecure"
       - "--serverappio-api-address"
       - "0.0.0.0:${CLOUD_SA}"
       - "--fleet-api-address"
-      - "0.0.0.0:${CLOUD_FL}"
+      - "0.0.0.0:${INTERNAL_CLOUD_FL}"
       - "--control-api-address"
       - "0.0.0.0:${CLOUD_CTRL}"
-EOF
-
-if [ "$INSECURE_MODE" = false ]; then
-cat <<EOF>> "$COMPOSE_FILE"
-      - "--ssl-certfile=/app/certs/cloud_server/certificates.pem"
-      - "--ssl-keyfile=/app/certs/cloud_server/private-key.pem"
-      - "--ssl-ca-certfile=/app/certs/cloud_ca/ca.crt"
     volumes:
       - ${CLOUD_LOG_MOUNT}:/app/logs
       - ${SHARED_DATA_MOUNT}:/app/data
-      - "$CERTS_DIR:/app/certs:ro"
-EOF
-else
-cat <<EOF>> "$COMPOSE_FILE"
-      - "--insecure"
-    volumes:
-      - ${CLOUD_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data
-EOF
-fi
-
-cat <<EOF>> "$COMPOSE_FILE"
     networks: [flwr-network]
     ports: 
       - "${CLOUD_CTRL}:${CLOUD_CTRL}"
@@ -99,7 +92,9 @@ if [ "$INSECURE_MODE" = false ]; then
       - "$NGINX_CONF:/etc/nginx/nginx.conf:ro"
       - "$CERTS_DIR:/etc/nginx/certs:ro"
     networks: [flwr-network]
-    ports: ["9200-9300:9200-9300"]
+    ports: 
+      - "${CLOUD_FL}:${CLOUD_FL}"
+      - "9200-9299:9200-9299"
 EOF
 fi
 
@@ -110,15 +105,21 @@ for i in $(seq 1 $NUM_FOGS); do
     FOG_CLIENT_IO=$((FOG_CIO_BASE + i))
     CURRENT_EDGES=${EDGES_ARRAY[$((i-1))]:-0}
     FOG_LOG_MOUNT="./logs/nodes/fog_${i}"
+
+    mkdir -p "$PROJECT_ROOT/logs/nodes/fog_${i}"
+    
+    # Calculate offset ports for internal plain-text routing
+    CLOUD_PROXY_PORT=$((CLOUD_FL + 20000 + i))
     
     if [ "$INSECURE_MODE" = false ]; then
         FOG_INTERNAL_FL=$((FOG_FL_BASE + 10000 + i))
+        CLOUD_UPLINK="nginx-proxy:${CLOUD_PROXY_PORT}"
     else
         FOG_INTERNAL_FL=$FOG_FL
+        CLOUD_UPLINK="cloud-superlink:${CLOUD_FL}"
     fi
 
     cat <<EOF>> "$COMPOSE_FILE"
-
   # ---------------------------------------------------------
   # TIER 2: FOG ${i} INFRASTRUCTURE
   # ---------------------------------------------------------
@@ -129,30 +130,16 @@ for i in $(seq 1 $NUM_FOGS); do
     command:
       - "--isolation"
       - "process"
+      - "--insecure"
       - "--superlink"
-      - "cloud-superlink:${CLOUD_FL}"
+      - "${CLOUD_UPLINK}"
       - "--clientappio-api-address"
       - "0.0.0.0:${FOG_CLIENT_IO}"
       - "--node-config"
       - "fog_id=${i}"
-EOF
-    if [ "$INSECURE_MODE" = false ]; then
-    cat <<EOF>> "$COMPOSE_FILE"
-      - "--root-certificates=/app/certs/cloud_ca/ca.crt"
     volumes:
       - ${FOG_LOG_MOUNT}:/app/logs
       - ${SHARED_DATA_MOUNT}:/app/data:ro
-      - "$CERTS_DIR:/app/certs:ro"
-EOF
-    else
-    cat <<EOF>> "$COMPOSE_FILE"
-      - "--insecure"
-    volumes:
-      - ${FOG_LOG_MOUNT}:/app/logs
-      - ${SHARED_DATA_MOUNT}:/app/data:ro
-EOF
-    fi
-    cat <<EOF>> "$COMPOSE_FILE"
     networks: [flwr-network]
     depends_on:
       cloud-superlink:
@@ -227,6 +214,8 @@ EOF
             EDGE_CLIENT_IO=$((EDGE_CIO_BASE + (i * 100) + j))
             EDGE_PROXY_PORT=$((FOG_FL_BASE + 20000 + (i * 100) + j))
             EDGE_LOG_MOUNT="./logs/nodes/edge_${i}_${j}"
+
+            mkdir -p "$PROJECT_ROOT/logs/nodes/edge_${i}_${j}"
             
             if [ "$INSECURE_MODE" = false ]; then
                 EDGE_UPLINK="nginx-proxy:${EDGE_PROXY_PORT}"
