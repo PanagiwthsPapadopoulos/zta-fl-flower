@@ -131,11 +131,13 @@ def parse_round_state(round_logs, topology):
             if "[TPM-GENERATE] Final Plaintext JSON Token" in msg or "hardware quote structure" in msg:
                 state["edge_tokens_generated"].add(node)
         elif "FOG" in node and "SERVER" in node:
-            if match := re.search(r"Ingesting Cryptographic Result for (\[EDGE [^\]]+\])", msg):
+            # Added .*? to account for hardware IDs preceding the [EDGE X] tag
+            if match := re.search(r"Ingesting Cryptographic Result for .*?(\[EDGE [^\]]+\])", msg):
                 state["edge_tokens_verified"].add(match.group(1))
-            if match := re.search(r"REJECTED: Attestation/PCR mismatch for (\[EDGE [^\]]+\])", msg):
+            if match := re.search(r"REJECTED: Attestation/PCR mismatch for .*?(\[EDGE [^\]]+\])", msg):
                 edge_id = match.group(1)
                 state["edge_tokens_rejected"][edge_id] = last_node_error.get(node, "Unknown Error")
+                
             if any(k in msg for k in ["Relaying", "No trusted results", "Bypassing"]):
                 clean_msg = msg.replace("[IPC SERVER] ", "").replace(f"{node} ", "")
                 state["fog_live_status"][node] = clean_msg
@@ -156,7 +158,7 @@ def parse_round_state(round_logs, topology):
 
     return state
 
-def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True):
+def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True, is_expanded=True):
     """Build the TUI panel."""
     n_clouds = max(1, len(topology["cloud"]))
     n_fog_c = max(1, len(topology["fog_clients"]))
@@ -178,30 +180,50 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
     p6_complete = len(state["fog_servers_aggregated"]) == n_fog_s
     p7_complete = state["cloud_evaluated"]
 
+    # 1. Determine if the entire round is 100% finished
+    is_round_complete = all([p1_complete, p2_complete, p3_complete, p4_complete, p5_complete, p6_complete, p7_complete])
+
+    # 2. Determine the furthest active phase to prevent marking previous incomplete steps as "Upcoming"
+    highest_phase = 1
+    if p7_complete or state.get("cloud_evaluated") or len(state.get("fog_clients_delivered", [])) > 0 or state.get("eval_metrics") is not None: 
+        highest_phase = 7
+    elif p6_complete or len(state.get("fog_servers_aggregated", [])) > 0 or len(state.get("fog_live_status", {})) > 0: 
+        highest_phase = 6
+    elif p5_complete or total_processed_tokens > 0 or len(state.get("edge_tokens_rejected", {})) > 0: 
+        highest_phase = 5
+    elif p4_complete or len(state.get("edge_tokens_generated", [])) > 0: 
+        highest_phase = 4
+    elif p3_complete or len(state.get("edges_trained", [])) > 0 or len(state.get("edge_epochs", {})) > 0: 
+        highest_phase = 3
+    elif p2_complete or len(state.get("fog_clients_started", [])) > 0 or len(state.get("fog_servers_started", [])) > 0: 
+        highest_phase = 2
+
+    t = Table.grid(padding=(0, 0))
+    has_pending_phase = False
+
     t = Table.grid(padding=(0, 0))
     has_pending_phase = False
     
     def get_completed_title(text):
-        return f"[bold green]✔[/] [bold white]{text}[/]" if is_current_round else f"[dim green]✔[/] [dim white]{text}[/]"
+        # Changed completed color to green text instead of white text
+        return f"[bold green]✔ {text}[/]" if is_current_round else f"[dim green]✔ {text}[/]"
 
     # ---------------------------
     # PHASE 1: Initialization
     # ---------------------------
     if p1_complete:
         t.add_row(get_completed_title("Initialization Completed"))
-        if is_current_round:
+        if is_expanded and not is_round_complete:
             t.add_row(get_progress_bar("  Cloud Nodes:", n_clouds, n_clouds))
             t.add_row(get_progress_bar("  Fog Nodes:", tot_fog, tot_fog))
             t.add_row(get_progress_bar("  Edge Nodes:", n_edges, n_edges))
-    elif not has_pending_phase:
-        t.add_row("[bold white]Executing Fog Aggregation....[/]")
-        t.add_row(get_progress_bar("  Fog Aggregation:", len(state["fog_servers_aggregated"]), n_fog_s))
-        t.add_row("  [dim white]Awaiting for:[/]")
-        for f_serv in sorted(topology["fog_servers"]):
-            if f_serv not in state["fog_servers_aggregated"]:
-                curr_status = state.get("fog_live_status", {}).get(f_serv, "Aggregating...")
-                short_status = (curr_status[:60] + "...") if len(curr_status) > 60 else curr_status
-                t.add_row(f"  [bold white]{f_serv}:[/] [green]{short_status}[/]")
+    elif has_pending_phase and highest_phase < 1 and is_expanded:
+        t.add_row("[dim white]▶ Upcoming: Initialization...[/]")
+    else:
+        t.add_row("[bold white]Executing Initialization...[/]")
+        t.add_row(get_progress_bar("  Cloud Nodes:", cloud_count, n_clouds))
+        t.add_row(get_progress_bar("  Fog Nodes:", fog_count, tot_fog))
+        t.add_row(get_progress_bar("  Edge Nodes:", edge_count, n_edges))
         has_pending_phase = True
 
     # ---------------------------
@@ -209,11 +231,11 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
     # ---------------------------
     if p2_complete:
         t.add_row(get_completed_title("Bridging Completed"))
-        if is_current_round:
+        if is_current_round and not is_round_complete:
             t.add_row(get_progress_bar("  Fog Nodes Bridged:", n_fog_c, n_fog_c))
-    elif has_pending_phase and is_current_round:
-        t.add_row("[dim green]▶ Upcoming: Bridging Nodes...[/]")
-    elif not has_pending_phase:
+    elif has_pending_phase and highest_phase < 2 and is_current_round:
+        t.add_row("[dim white]▶ Upcoming: Bridging Nodes...[/]")
+    else:
         t.add_row("[bold white]Awaiting Bridging...[/]")
         bridged_count = min(len(state["fog_clients_started"]), len(state["fog_servers_started"]))
         t.add_row(get_progress_bar("  Fog Nodes Bridged:", bridged_count, n_fog_c))
@@ -223,7 +245,8 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
             if f_serv not in state["fog_servers_started"]:
                 msg = state["latest_fog_msg"].get(f_serv, "Awaiting initial log message...")
                 short_msg = (msg[:60] + "...") if len(msg) > 60 else msg
-                color = "bold green" if any(k in msg for k in ["Booting", "Listening", "Blocking", "established", "START"]) else "bold red"
+                # Changed "bold red" to "bold white" below
+                color = "bold green" if any(k in msg for k in ["Booting", "Listening", "Blocking", "established", "START"]) else "bold white"
                 t.add_row(f"    [{color}]{f_serv}:[/] [dim white]{short_msg}[/]")
                 
         t.add_row("  [bold white]Awaiting Fog Clients:[/]")
@@ -231,7 +254,8 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
             if f_client not in state["fog_clients_started"]:
                 msg = state["latest_fog_msg"].get(f_client, "Awaiting initial log message...")
                 short_msg = (msg[:60] + "...") if len(msg) > 60 else msg
-                color = "bold green" if any(k in msg for k in ["Attempting", "established", "Connected", "dispatched"]) else "bold red"
+                # Changed "bold red" to "bold white" below
+                color = "bold green" if any(k in msg for k in ["Attempting", "established", "Connected", "dispatched"]) else "bold white"
                 t.add_row(f"    [{color}]{f_client}:[/] [dim white]{short_msg}[/]")
                 
         has_pending_phase = True
@@ -241,11 +265,11 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
     # ---------------------------
     if p3_complete:
         t.add_row(get_completed_title("Edges Trained"))
-        if is_current_round:
+        if is_current_round and not is_round_complete:
             t.add_row(get_progress_bar("  Progress:", n_edges, n_edges))
-    elif has_pending_phase and is_current_round:
-        t.add_row("[dim green]▶ Upcoming: Executing Training...[/]")
-    elif not has_pending_phase:
+    elif has_pending_phase and highest_phase < 3 and is_current_round:
+        t.add_row("[dim white]▶ Upcoming: Executing Training...[/]")
+    else:
         t.add_row("[bold white]Executing Training[/]")
         t.add_row(get_progress_bar("  Progress:", len(state["edges_trained"]), n_edges))
         t.add_row("  [dim white]Awaiting for:[/]")
@@ -264,11 +288,11 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
     # ---------------------------
     if p4_complete:
         t.add_row(get_completed_title("Tokens Generated"))
-        if is_current_round:
+        if is_current_round and not is_round_complete:
             t.add_row(get_progress_bar("  Progress:", n_edges, n_edges))
-    elif has_pending_phase and is_current_round:
-        t.add_row("[dim green]▶ Upcoming: Generating Attestation Tokens...[/]")
-    elif not has_pending_phase:
+    elif has_pending_phase and highest_phase < 4 and is_current_round:
+        t.add_row("[dim white]▶ Upcoming: Generating Attestation Tokens...[/]")
+    else:
         t.add_row("[bold white]Generating Attestation Tokens[/]")
         t.add_row(get_progress_bar("  Progress:", len(state["edge_tokens_generated"]), n_edges))
         t.add_row("  [dim white]Awaiting for:[/]")
@@ -284,19 +308,17 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
     # ---------------------------
     if p5_complete:
         t.add_row(get_completed_title("Attestation Tokens Verification Completed"))
-        if is_current_round:
+        if is_current_round and not is_round_complete:
             t.add_row(get_progress_bar("  Tokens received:", n_edges, n_edges))
             t.add_row(get_progress_bar("  Tokens parsed:", n_edges, n_edges))
             
-        if len(state["edge_tokens_rejected"]) > 0:
-            for rej, error_msg in state["edge_tokens_rejected"].items():
-                t.add_row(f"  [bold red]✖ Rejected: {rej} - {error_msg}[/]")
-                
-    elif has_pending_phase and is_current_round:
-        t.add_row("[dim green]▶ Upcoming: Verifying Attestation Tokens...[/]")
-    elif not has_pending_phase:
+            if len(state["edge_tokens_rejected"]) > 0:
+                for rej, error_msg in state["edge_tokens_rejected"].items():
+                    t.add_row(f"  [bold red]✖ Rejected: {rej} - {error_msg}[/]")
+    elif has_pending_phase and highest_phase < 5 and is_current_round:
+        t.add_row("[dim white]▶ Upcoming: Verifying Attestation Tokens...[/]")
+    else:
         t.add_row("[bold white]Verifying Attestation Tokens....[/]")
-        
         tokens_received = len(state["edge_tokens_generated"])
         t.add_row(get_progress_bar("  Tokens received:", tokens_received, n_edges))
         t.add_row(get_progress_bar("  Tokens parsed:", total_processed_tokens, n_edges))
@@ -311,13 +333,20 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
     # ---------------------------
     if p6_complete:
         t.add_row(get_completed_title("Fog Aggregation Completed"))
-        if is_current_round:
+        if is_expanded and not is_round_complete:
             t.add_row(get_progress_bar("  Fog Aggregation:", n_fog_s, n_fog_s))
-    elif has_pending_phase and is_current_round:
-        t.add_row("[dim green]▶ Upcoming: Executing Fog Aggregation...[/]")
-    elif not has_pending_phase:
+    elif has_pending_phase and highest_phase < 6 and is_expanded:
+        t.add_row("[dim white]▶ Upcoming: Executing Fog Aggregation...[/]")
+    else:
         t.add_row("[bold white]Executing Fog Aggregation....[/]")
         t.add_row(get_progress_bar("  Fog Aggregation:", len(state["fog_servers_aggregated"]), n_fog_s))
+        t.add_row("  [dim white]Awaiting for:[/]")
+        for f_serv in sorted(topology["fog_servers"]):
+            if f_serv not in state["fog_servers_aggregated"]:
+                # Grabbing the latest log message and outputting in standard gray
+                msg = state["latest_fog_msg"].get(f_serv, "Awaiting initial log message...")
+                short_msg = (msg[:60] + "...") if len(msg) > 60 else msg
+                t.add_row(f"  [bold white]{f_serv}[/] [dim white]latest log message:[/] [dim white]{short_msg}[/]")
         has_pending_phase = True
 
     # ---------------------------
@@ -337,15 +366,16 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True)
 
     if p7_complete:
         t.add_row(get_completed_title("Global Model Evaluation Completed"))
-        if is_current_round:
-            t.add_row(get_progress_bar("  Received updates:", n_fog_c, n_fog_c))
-        
-        t.add_row(f"  {calc_status} [dim white]{calc_text}[/]")
-        t.add_row(f"  {save_status} [dim white]{save_text}[/]")
-        
-    elif has_pending_phase and is_current_round:
-        t.add_row("[dim green]▶ Upcoming: Completing Evaluation...[/]")
-    elif not has_pending_phase:
+        if not is_round_complete:
+            if is_current_round:
+                t.add_row(get_progress_bar("  Received updates:", n_fog_c, n_fog_c))
+            
+            t.add_row(f"  {calc_status} [dim white]{calc_text}[/]")
+            t.add_row(f"  {save_status} [dim white]{save_text}[/]")
+            
+    elif has_pending_phase and highest_phase < 7 and is_current_round:
+        t.add_row("[dim white]▶ Upcoming: Completing Evaluation...[/]")
+    else:
         t.add_row("[bold white]Evaluating Global Model....[/]")
         t.add_row(get_progress_bar("  Received updates:", len(state["fog_clients_delivered"]), n_fog_c))
         
@@ -386,14 +416,50 @@ def generate_dashboard(logs):
 
     pipeline_completed = False
 
+    # Calculate totals for completion validation
+    n_clouds = max(1, len(topology["cloud"]))
+    n_fog_c = max(1, len(topology["fog_clients"]))
+    n_fog_s = max(1, len(topology["fog_servers"]))
+    n_edges = max(1, len(topology["edges"]))
+    tot_fog = n_fog_s + n_fog_c
+
     for r_num in range(1, max_rounds + 1):
         round_logs = rounds_data[r_num]
         state = parse_round_state(round_logs, topology)
+        
+        # 1. Validate Phase Completion
+        cloud_c = n_clouds if state["cloud_init"] else min(sum(1 for n in state["nodes_booted"] if "CLOUD" in n), n_clouds)
+        fog_c = min(sum(1 for n in state["nodes_booted"] if "FOG" in n), tot_fog)
+        edge_c = min(sum(1 for n in state["nodes_booted"] if "EDGE" in n), n_edges)
+        
+        p1 = (cloud_c == n_clouds) and (fog_c == tot_fog) and (edge_c == n_edges)
+        p2 = (len(state["fog_clients_started"]) == n_fog_c) and (len(state["fog_servers_started"]) == n_fog_s)
+        p3 = (len(state["edges_trained"]) == n_edges)
+        p4 = (len(state["edge_tokens_generated"]) == n_edges)
+        
+        total_processed_tokens = len(state["edge_tokens_verified"]) + len(state["edge_tokens_rejected"])
+        p5 = (total_processed_tokens == n_edges)
+        
+        p6 = (len(state["fog_servers_aggregated"]) == n_fog_s)
+        p7 = state["cloud_evaluated"]
+        
+        # 2. Strict Boolean Check for completion
+        is_fully_complete = all([p1, p2, p3, p4, p5, p6, p7])
+        
+        # 3. Check for any security/attestation rejections
+        has_rejections = len(state["edge_tokens_rejected"]) > 0
+        
+        # 4. Dynamic Rendering: Keep expanded if incomplete, has rejections, OR is the final round
         is_latest = (r_num == max_rounds)
+        should_expand = not is_fully_complete or has_rejections or is_latest
         
-        main_table.add_row(build_round_panel(r_num, max_rounds, state, topology, is_current_round=is_latest))
-        
-        if is_latest and state["cloud_evaluated"]:
+        if should_expand:
+            main_table.add_row(build_round_panel(r_num, max_rounds, state, topology, is_expanded=True))
+        else:
+            # Collapse ONLY when flawlessly finished with zero rejections AND it is an older round
+            main_table.add_row(Panel(f"[dim green]✔ Round {r_num} Completed[/]", border_style="grey37", box=box.SQUARE))
+            
+        if is_fully_complete and is_latest:
             pipeline_completed = True
 
     if pipeline_completed:
@@ -408,6 +474,7 @@ def main():
     args = parser.parse_args()
 
     if args.watch:
+        # Kept screen=True to preserve formatting, solved the overflow issue dynamically instead.
         with Live(console=console, screen=True, auto_refresh=False) as live:
             try:
                 while True:
