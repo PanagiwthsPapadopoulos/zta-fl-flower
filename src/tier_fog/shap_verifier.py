@@ -5,6 +5,7 @@ import torch.nn as nn
 import concurrent.futures
 
 from src.shared.utils.metrics import federated_averaging, compute_shap_stability
+from src.shared.utils.hardware import get_device, get_dynamic_thread_limit
 
 
 def shap_weighted_aggregate(
@@ -21,18 +22,22 @@ def shap_weighted_aggregate(
     """
     # Initialize a list to hold the SHAP stability score (s_i) for each agent's model
     stability_scores: list[float] = [0.0] * len(local_models)
+
+    # Cross-platform device detection
+    device = get_device()
+    max_threads = min(get_dynamic_thread_limit(), len(local_models))
     
     # Helper function to compute SHAP stability for a single model asynchronously
     def _compute_single_shap(idx: int, local_m: nn.Module) -> tuple[int, float]:
         # Computes s_i = 1 - (||phi_i - phi_ref||_2 / (||phi_ref||_2 + epsilon))
         score = compute_shap_stability(
             local_m, ref_model, X_val, y_val,
-            n_explain=n_explain, n_classes=n_classes, device="cpu"
+            n_explain=n_explain, n_classes=n_classes, device=device
         )
         return idx, score
 
     # Cap the maximum threads to 10 to prevent resource exhaustion at the Fog Node
-    max_threads = min(10, len(local_models))
+    max_threads = min(get_dynamic_thread_limit(), len(local_models))
 
     # Parallelize SHAP computation across available threads to reduce per-round latency
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:

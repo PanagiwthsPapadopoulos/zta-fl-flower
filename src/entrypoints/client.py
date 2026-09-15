@@ -14,7 +14,7 @@ from src.shared.network.compression import compress_weights
 from src.shared.data.data_loader import DATASET_METADATA, get_dataset, non_iid_partition
 from src.shared.utils.logger_setup import setup_logger
 from src.shared.security.backdoor_math import poison_partition
-
+from src.shared.utils.hardware import get_device, get_dataloader_kwargs
 
 
 class Client(NumPyClient):
@@ -146,7 +146,7 @@ def client_fn(context: Context):
     from src.shared.utils.config_loader import get_merged_config
     run_config = get_merged_config(context.run_config)
     node_config = context.node_config
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = get_device()
     
     train_loader = None
     dataset_metadata = None
@@ -289,7 +289,13 @@ def client_fn(context: Context):
 
             dataset = TensorDataset(X_part, y_part)
             batch_size = int(run_config["batch_size"])
-            train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+            device = get_device()
+            train_loader = DataLoader(
+                dataset, 
+                batch_size=batch_size, 
+                shuffle=True, 
+                **get_dataloader_kwargs()
+            )
             
             classes_present, counts = torch.unique(y_part, return_counts=True)
             dataset_metadata = {
@@ -297,7 +303,8 @@ def client_fn(context: Context):
                 "role": role,
                 "total_samples": len(y_part),
                 "unique_classes": len(classes_present),
-                "distribution": str(dict(zip(classes_present.tolist(), counts.tolist()))) 
+                "distribution": str(dict(zip(classes_present.tolist(), counts.tolist()))),
+                "hardware_device": device
             }
             logger.info(f"STATIC ROLE: {role.upper()} | Global Index: {global_index}/{total_edges-1} | Network Topology: {topology}")
             

@@ -16,6 +16,19 @@ SHARED_CONFIG_MOUNT="./config"
 SHARED_RESULTS_MOUNT="./results"
 CLOUD_LOG_MOUNT="./logs/nodes/cloud"
 
+# Dynamic Host GPU Detection
+if command -v nvidia-smi >/dev/null 2>&1; then
+    GPU_CONFIG="    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]"
+else
+    GPU_CONFIG=""
+fi
+
 # Explicitly create directory to prevent Mac Docker VM sync race conditions
 mkdir -p "$PROJECT_ROOT/logs/nodes/cloud"
 
@@ -82,6 +95,7 @@ services:
       - ${SHARED_DATA_MOUNT}:/app/data
       - ${SHARED_RESULTS_MOUNT}:/app/results
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
+${GPU_CONFIG}
 EOF
 
 if [ "$INSECURE_MODE" = false ]; then
@@ -208,6 +222,7 @@ for i in $(seq 1 $NUM_FOGS); do
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
       - ./runtime/tpm_state:/app/runtime/tpm_state:rw
       - ${SHARED_RESULTS_MOUNT}:/app/results
+${GPU_CONFIG}
 EOF
 
     if [ "$CURRENT_EDGES" -gt 0 ]; then
@@ -270,6 +285,7 @@ EOF
       - ${SHARED_DATA_MOUNT}:/app/data:ro
       - ./runtime/tpm_state/edge_${i}_${j}:/app/runtime/tpm_state/edge_${i}_${j}
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
+${GPU_CONFIG}
 EOF
         done
     fi

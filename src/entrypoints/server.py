@@ -12,6 +12,7 @@ from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from src.shared.utils.logger_setup import setup_logger
 from src.shared.data.data_loader import get_dataset, DATASET_METADATA
 from src.tier_cloud.global_evaluator import GlobalEvaluator
+from src.shared.utils.hardware import get_device
 
 
 def fit_config(server_round: int) -> dict:
@@ -133,7 +134,7 @@ def server_fn(context: Context) -> ServerAppComponents:
         dataset_path=dataset_path, 
         num_classes=num_classes, 
         n_features=n_features, 
-        device="cpu", 
+        device=get_device(), 
         random_seed=run_metadata["random_seed"], 
         run_metadata=run_metadata,
         tier=tier,
