@@ -1,25 +1,30 @@
 #!/bin/bash
-set -e  # Exit immediately if any command fails
 
-# Define your registry details (Change this to your actual Docker Hub username)
+# Use "docker buildx imagetools inspect panagiotispapadopoulos/zta-cloud-node:latest" to inspect the images.
+
+set -e
+
 DOCKER_USER="panagiotispapadopoulos"
 
-# ----------------------------------------
-# 1. Build and Push the Cloud Image
-# ----------------------------------------
-echo "Building Cloud Image..."
-docker build -t $DOCKER_USER/zta-cloud-node:latest -f docker/cloud.Dockerfile .
+# Ensure a buildx builder exists and is active for multi-arch compilation
+docker buildx create --use --name zta-builder 2>/dev/null || docker buildx use zta-builder
 
-echo "Pushing Cloud Image..."
-docker push $DOCKER_USER/zta-cloud-node:latest
+echo "Building and Pushing Cloud Image (Multi-Arch with Registry Caching)..."
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t $DOCKER_USER/zta-cloud-node:latest \
+  --cache-from type=registry,ref=$DOCKER_USER/zta-cloud-node:buildcache \
+  --cache-to type=registry,ref=$DOCKER_USER/zta-cloud-node:buildcache,mode=max \
+  -f docker/cloud.Dockerfile \
+  --push .
 
-# ----------------------------------------
-# 2. Build and Push the Edge Image
-# ----------------------------------------
-echo "Building Edge Image..."
-docker build -t $DOCKER_USER/zta-edge-node:latest -f docker/edge.Dockerfile .
+echo "Building and Pushing Edge Image (Multi-Arch with Registry Caching)..."
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t $DOCKER_USER/zta-edge-node:latest \
+  --cache-from type=registry,ref=$DOCKER_USER/zta-edge-node:buildcache \
+  --cache-to type=registry,ref=$DOCKER_USER/zta-edge-node:buildcache,mode=max \
+  -f docker/edge.Dockerfile \
+  --push .
 
-echo "Pushing Edge Image..."
-docker push $DOCKER_USER/zta-edge-node:latest
-
-echo "✅ Both images have been successfully built and pushed to $DOCKER_USER!"
+echo "Multi-arch images successfully built and pushed to $DOCKER_USER!"

@@ -18,8 +18,8 @@ COPY ./src /app/src
 
 COPY ./scripts /app/scripts
 
-# Force CPU torch to keep builds fast
-RUN /python/venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Download full Pytorch to enable CUDA
+RUN /python/venv/bin/pip install --no-cache-dir torch torchvision
 RUN sed -i 's/.*flwr\[simulation\].*//' pyproject.toml || true
 RUN /python/venv/bin/pip install --no-cache-dir -U .
 

@@ -389,10 +389,13 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
     
     return Panel(t, title=f"[{title_color}]Round {r_num}/{max_rounds}[/]", title_align="left", border_style="grey37", style=style, box=box.SQUARE)
 
-def generate_dashboard(logs):
-    """Build TUI dashboard."""
+def generate_dashboard(logs, printed_rounds=None):
+    """Build TUI dashboard, separating completed rounds from active ones."""
+    if printed_rounds is None:
+        printed_rounds = set()
+        
     if not logs:
-        return Panel("[dim white]No log files discovered.[/]", box=box.SQUARE)
+        return [], Panel("[dim white]No log files discovered.[/]", box=box.SQUARE)
 
     topology = discover_topology(logs)
     rounds_data = defaultdict(list)
@@ -409,11 +412,12 @@ def generate_dashboard(logs):
             rounds_data[r].append(log)
 
     if not rounds_data:
-        return Panel("[dim white]Awaiting federated round initialization...[/]", box=box.SQUARE)
+        return [], Panel("[dim white]Awaiting federated round initialization...[/]", box=box.SQUARE)
 
     max_rounds = max(rounds_data.keys())
+    
+    completed_panels = []
     main_table = Table.grid(expand=True)
-
     pipeline_completed = False
 
     # Calculate totals for completion validation
@@ -424,6 +428,10 @@ def generate_dashboard(logs):
     tot_fog = n_fog_s + n_fog_c
 
     for r_num in range(1, max_rounds + 1):
+        # Skip evaluating rounds we've already permanently printed
+        if r_num in printed_rounds:
+            continue
+            
         round_logs = rounds_data[r_num]
         state = parse_round_state(round_logs, topology)
         
@@ -449,15 +457,17 @@ def generate_dashboard(logs):
         # 3. Check for any security/attestation rejections
         has_rejections = len(state["edge_tokens_rejected"]) > 0
         
-        # 4. Dynamic Rendering: Keep expanded if incomplete, has rejections, OR is the final round
+        # 4. Dynamic Rendering
         is_latest = (r_num == max_rounds)
         should_expand = not is_fully_complete or has_rejections or is_latest
         
         if should_expand:
             main_table.add_row(build_round_panel(r_num, max_rounds, state, topology, is_expanded=True))
         else:
-            # Collapse ONLY when flawlessly finished with zero rejections AND it is an older round
-            main_table.add_row(Panel(f"[dim green]✔ Round {r_num} Completed[/]", border_style="grey37", box=box.SQUARE))
+            # Round is entirely finished and NOT the latest. 
+            # We add it to the completed list to be printed permanently to stdout.
+            panel = Panel(f"[dim green]✔ Round {r_num} Completed[/]", border_style="grey37", box=box.SQUARE)
+            completed_panels.append((r_num, panel))
             
         if is_fully_complete and is_latest:
             pipeline_completed = True
@@ -466,7 +476,7 @@ def generate_dashboard(logs):
         main_table.add_row("")
         main_table.add_row(Panel("[bold white]✦ Pipeline Execution Completed Successfully ✦[/]", border_style="white", box=box.SQUARE))
 
-    return main_table
+    return completed_panels, main_table
 
 def main():
     parser = argparse.ArgumentParser()
@@ -474,18 +484,31 @@ def main():
     args = parser.parse_args()
 
     if args.watch:
-        # Kept screen=True to preserve formatting, solved the overflow issue dynamically instead.
-        with Live(console=console, screen=True, auto_refresh=False) as live:
+        printed_rounds = set()
+        # No screen=True here, so it prints directly to the standard buffer
+        with Live(console=console, auto_refresh=False) as live:
             try:
                 while True:
                     logs = load_logs()
-                    live.update(generate_dashboard(logs), refresh=True)
+                    
+                    # Get permanently finished rounds AND the active live view
+                    completed_panels, live_view = generate_dashboard(logs, printed_rounds)
+                    
+                    # Print the completed panels permanently ABOVE the live display
+                    # This allows standard scrollback buffer tracking and auto-scrolling
+                    for r_num, panel in completed_panels:
+                        console.print(panel)
+                        printed_rounds.add(r_num)
+                        
+                    # Update only the current active round(s)
+                    live.update(live_view, refresh=True)
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
     else:
         logs = load_logs()
-        console.print(generate_dashboard(logs))
+        _, live_view = generate_dashboard(logs)
+        console.print(live_view)
 
 if __name__ == "__main__":
     main()
