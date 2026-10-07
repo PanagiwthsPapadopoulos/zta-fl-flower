@@ -25,11 +25,19 @@ def shap_weighted_aggregate(
 
     # Cross-platform device detection
     device = get_device()
+    
+    # Cast the reference model ONCE before threading
+    ref_model = ref_model.to(device) 
+    
+    X_val = X_val.to(device)
+    y_val = y_val.to(device)
+
     max_threads = min(get_dynamic_thread_limit(), len(local_models))
     
     # Helper function to compute SHAP stability for a single model asynchronously
     def _compute_single_shap(idx: int, local_m: nn.Module) -> tuple[int, float]:
-        # Computes s_i = 1 - (||phi_i - phi_ref||_2 / (||phi_ref||_2 + epsilon))
+        local_m = local_m.to(device) 
+        
         score = compute_shap_stability(
             local_m, ref_model, X_val, y_val,
             n_explain=n_explain, n_classes=n_classes, device=device

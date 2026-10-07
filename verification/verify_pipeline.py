@@ -122,12 +122,14 @@ def parse_round_state(round_logs, topology):
             
             epoch_match = re.search(r"Epoch\s*(\d+)(?:\s*(?:/|of)\s*(\d+))?", msg, re.IGNORECASE)
             if epoch_match:
-                curr = epoch_match.group(1)
-                tot = epoch_match.group(2)
+                curr = int(epoch_match.group(1))
+                tot = int(epoch_match.group(2)) if epoch_match.group(2) else None
                 state["edge_epochs"][node] = f"Epoch {curr}/{tot}" if tot else f"Epoch {curr}"
-                
-            if "Epoch" in msg and "complete" in msg:
-                state["edges_trained"].add(node)
+
+                # Only mark as fully trained when the FINAL epoch reports "complete",
+                # not merely when any epoch reports "complete".
+                if tot is not None and curr == tot and "complete" in msg.lower():
+                    state["edges_trained"].add(node)
             if "[TPM-GENERATE] Final Plaintext JSON Token" in msg or "hardware quote structure" in msg:
                 state["edge_tokens_generated"].add(node)
         elif "FOG" in node and "SERVER" in node:

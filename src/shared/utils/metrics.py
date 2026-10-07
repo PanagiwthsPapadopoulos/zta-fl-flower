@@ -5,6 +5,7 @@ from typing import Optional, List
 import numpy as np
 import torch
 import torch.nn as nn
+from src.shared.utils.hardware import get_device
 
 
 def federated_averaging(models: List[nn.Module], weights: Optional[List[float]] = None) -> nn.Module:
@@ -176,14 +177,24 @@ def compute_shap_stability(model: nn.Module, ref_model: nn.Module, X_val: torch.
     # Ensure models are in evaluation mode to freeze batch normalization layers
     model.eval()
     ref_model.eval()
+    
+    # Force the tensors to the correct device
+    X_sub = X_sub.to(device)
+    background_set = background_set.to(device)
+    y_sub = y_sub.to(device)
 
     try:
         gs_model = GradientShap(model)
         gs_ref = GradientShap(ref_model)
-        
-        # Calculate attributions utilizing Captum directly
-        attrs_model = gs_model.attribute(X_sub, baselines=background_set, target=y_sub)
-        attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
+
+        if device == "cuda":
+        # cuDNN RNN backward passes fail in eval mode; disable only when CUDA is actually in use.
+            with torch.backends.cudnn.flags(enabled=False):
+                attrs_model = gs_model.attribute(X_sub, baselines=background_set, target=y_sub)
+                attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
+        else:
+            attrs_model = gs_model.attribute(X_sub, baselines=background_set, target=y_sub)
+            attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
     finally:
         restore_dropout(model, orig_probs_model)
         restore_dropout(ref_model, orig_probs_ref)

@@ -3,7 +3,6 @@ from datetime import datetime
 
 import torch
 import numpy as np
-torch.set_num_threads(1)
 from torch.utils.data import DataLoader, TensorDataset
 
 from flwr.common import Context
@@ -81,6 +80,10 @@ def server_fn(context: Context) -> ServerAppComponents:
     run_config = get_merged_config(context.run_config)
     
     run_metadata = _build_run_metadata(run_config)
+    
+    # CPU-only thread pinning — only applied when we are actually running on CPU.
+    #if get_device() == "cpu":
+    torch.set_num_threads(1)
 
     tier = str(run_config.get("tier", "unknown"))
     raw_fog_id = str(run_config.get("fog_id", "cloud"))

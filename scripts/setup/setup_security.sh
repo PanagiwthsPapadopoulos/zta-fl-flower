@@ -23,13 +23,16 @@ EDGES_STRING=${2:-"1"}
 read -r -a EDGES_ARRAY <<< "$EDGES_STRING"
 BROKER_IP=${3:-127.0.0.1}
 
-# Path resolution
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
-CERTS_DIR="$PROJECT_ROOT/runtime/certs"
+# ---- Path resolution ----
+# Prefer an explicit PROJECT_ROOT (Docker and Apptainer both pass it as --env).
+# Fall back to BASH_SOURCE-based derivation (works for local / direct invocation).
+if [ -z "${PROJECT_ROOT:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+fi
 
-# Configure dedicated security debug logging
-LOG_DIR="$PROJECT_ROOT/logs/system"
+CERTS_DIR="${CERTS_DIR:-$PROJECT_ROOT/runtime/certs}"
+LOG_DIR="${LOG_DIR:-$PROJECT_ROOT/logs/system}"
 mkdir -p "$LOG_DIR"
 SEC_LOG="$LOG_DIR/security_setup.log"
 echo "[SECURITY SETUP INITIATED]" > "$SEC_LOG"

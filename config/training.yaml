@@ -3,11 +3,23 @@ run_name: ""                            # String identifier for output JSON logs
 num_rounds: 2                          # Total number of global federated communication rounds
 snapshot_rounds: []                     # List with round numbers where the global model weights are saved. Insert 0 to save round 0 weights. Last round weights are always saved.
 snapshot_interval: 120                   # Interval between rounds where the global model weights are saved. Does not apply for round 0.
+# =====================================================================
+# HARDWARE EXECUTION POLICY
+# =====================================================================
+# Whitelist of tiers permitted to run tensor math on the GPU.
+# Tiers not listed here always run on CPU, even though the container
+# was launched with --nv and can see the GPU. An empty list forces
+# CPU federation-wide.
+#
+# Valid entries: "cloud", "fog", "edge".
+gpu_enabled_tiers: ["cloud", "fog", edge]
+max_concurrent_gpus: 2
+
 
 # Dataset
 dataset: "edge_iiotset"                 # Target dataset identifier mapped in data_loader.py
 dataset_path: "data/edge_iiotset/raw/network_traffic_samples.csv" # Relative path to the raw dataset file
-dataset_fraction: 0.01                  # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
+dataset_fraction: 0.1                  # Proportion of data to load (1.0 = 100%, 0.1 = 10% for fast dev testing)
 apply_smote: true                       # Set to true to generate synthetic minority data during training
 test_split: 0.15                        # Percentage of the dataset that will be used for testing
 val_split: 0.15                         # Percentage of the dataset that will be used for validation
@@ -16,7 +28,7 @@ val_split: 0.15                         # Percentage of the dataset that will be
 model_architecture: "cnnlstm"           # Target neural network class mapped in cnn_lstm.py
 learning_rate: 0.001                    # Optimizer step size during local training
 batch_size: 64                          # Number of samples processed before updating local weights
-local_epochs: 1                         # Number of full local dataset passes per federated round
+local_epochs: 50                         # Number of full local dataset passes per federated round
 random_seed: 42                         # Master seed for dataset shuffling, partition logic, and role assignment
 
 # Skew

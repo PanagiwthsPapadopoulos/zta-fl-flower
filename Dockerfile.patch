@@ -1,0 +1,9 @@
+# Start from your already-built heavy image
+FROM panagiotispapadopoulos/zta-edge-node:latest
+
+# Copy your fixed local script into the container
+COPY scripts/ops/edge_entrypoint.sh app/scripts/ops/edge_entrypoint.sh
+
+# Make it executable and force the container to use it
+RUN chmod +x /app/scripts/ops/edge_entrypoint.sh
+ENTRYPOINT ["/app/scripts/ops/edge_entrypoint.sh"]

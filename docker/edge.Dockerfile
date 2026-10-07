@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     swtpm \
     swtpm-tools \
     tpm2-tools \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

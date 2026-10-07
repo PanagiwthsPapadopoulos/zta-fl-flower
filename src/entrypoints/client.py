@@ -220,6 +220,7 @@ def client_fn(context: Context):
                 "robustness_eval_attack": str(run_config["robustness_eval_attack"]),
                 "shap_explain_count": int(run_config["shap_explain_count"]),
                 "shap_val_samples": int(run_config["shap_val_samples"]),
+                "max_concurrent_gpus": int(run_config["max_concurrent_gpus"]),
             }
             
             # Load BENIGN role variables

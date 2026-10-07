@@ -1,6 +1,9 @@
-import copy
+import os
+import fcntl
+import gc
 import json
 import torch
+import copy
 from collections import OrderedDict
 from torch.utils.data import DataLoader, TensorDataset
 from src.shared.security.adversarial_math import local_train_honest, local_train_byzantine, adversarial_train_epoch, local_train_proximal, local_train_shap_aware
@@ -38,42 +41,100 @@ class EdgeTrainer:
             self.model.load_state_dict(state_dict, strict=True)
 
     def execute_training(self, parameters: list, current_round: int, config: dict):
-        """Executes the core training loop, managing epochs and adversarial logic."""
+        """Executes the core training loop, managing epochs and adversarial logic with a multi-slot GPU lock."""
         self.set_parameters(parameters)
         
-        global_model = copy.deepcopy(self.model)
-        global_model.eval()
-        global_model.to(self.device)
-        
-        lr = self.train_config["learning_rate"]
-        role = self.train_config["role"]
-        epochs = self.train_config["local_epochs"]
-        
-        active_loader = self.train_loader
-        
-        self.logger.info(f"{self.log_prefix} Starting Training with learning rate: {lr}, epochs: {epochs}, role: {role}", extra={"round": current_round})
-                    
-        # Start the training for each role
-        loss = 0.0
-        for epoch in range(epochs):
-            loss = self._train_based_on_role(role, lr, current_round, active_loader, global_model)
-            self.logger.info(f"{self.log_prefix} Epoch {epoch + 1}/{epochs} complete. Loss: {loss:.4f}", extra={"round": current_round})
-        
-        metadata = {
-            "node_name": self.log_prefix,
-            "loss": loss,
-            "role": role,
-            **self.dataset_metadata 
-        }
-
-        # Generate TPM token
-        from src.tier_edge.tpm_attestation import TPMAttestation
-        tpm_engine = TPMAttestation(logger=self.logger, current_round=current_round)
-        nonce = config.get("nonce", f"round_{current_round}_default")
-        tpm_token = tpm_engine.generate_attestation_token(nonce=nonce, software_label=self.log_prefix, round_num=current_round)
-        metadata["tpm_token_json"] = json.dumps(tpm_token)
+        # Helper function to avoid duplicating the training loop for CPU and GPU paths
+        def _run_core_training():
+            global_model = copy.deepcopy(self.model)
+            global_model.eval()
+            global_model.to(self.device)
             
-        return self.get_parameters(), len(self.train_loader.dataset), metadata
+            lr = self.train_config["learning_rate"]
+            role = self.train_config["role"]
+            epochs = self.train_config["local_epochs"]
+            active_loader = self.train_loader
+            
+            self.logger.info(f"{self.log_prefix} Starting Training with learning rate: {lr}, epochs: {epochs}, role: {role}", extra={"round": current_round})
+            
+            loss = 0.0
+            for epoch in range(epochs):
+                loss = self._train_based_on_role(role, lr, current_round, active_loader, global_model)
+                self.logger.info(f"{self.log_prefix} Epoch {epoch + 1}/{epochs} complete. Loss: {loss:.4f}", extra={"round": current_round})
+            
+            metadata = {
+                "node_name": self.log_prefix,
+                "loss": loss,
+                "role": role,
+                **self.dataset_metadata 
+            }
+            
+            # Generate TPM token
+            from src.tier_edge.tpm_attestation import TPMAttestation
+            tpm_engine = TPMAttestation(logger=self.logger, current_round=current_round)
+            nonce = config.get("nonce", f"round_{current_round}_default")
+            tpm_token = tpm_engine.generate_attestation_token(nonce=nonce, software_label=self.log_prefix, round_num=current_round)
+            metadata["tpm_token_json"] = json.dumps(tpm_token)
+            
+            # Extract parameters before clearing the GPU
+            final_params = self.get_parameters()
+            
+            # Purge VRAM immediately if we are on a GPU
+            if self.device != "cpu":
+                self.logger.info(f"{self.log_prefix} Local epochs complete. Purging GPU VRAM.", extra={"round": current_round})
+                global_model.to("cpu")
+                del global_model
+                self.model.to("cpu")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                gc.collect()
+                
+            return final_params, len(self.train_loader.dataset), metadata
+
+        # ==========================================
+        # EXECUTION ROUTER (GPU LOCK vs CPU BYPASS)
+        # ==========================================
+        if self.device != "cpu":
+            max_slots = int(self.train_config.get("max_concurrent_gpus", 1))
+            lock_dir = "/app/runtime/locks"
+            acquired_slot = None
+            lock_file_handle = None
+            
+            self.logger.info(f"{self.log_prefix} Queued for GPU. Waiting for 1 of {max_slots} slots...", extra={"round": current_round})
+            
+            # Non-blocking polling loop
+            while acquired_slot is None:
+                for slot in range(max_slots):
+                    lock_path = os.path.join(lock_dir, f"gpu_slot_{slot}.lock")
+                    try:
+                        f = open(lock_path, "w")
+                        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired_slot = slot
+                        lock_file_handle = f
+                        break 
+                    except BlockingIOError:
+                        f.close()
+                        continue
+                        
+                if acquired_slot is None:
+                    import time
+                    time.sleep(2)
+                    
+            self.logger.info(f"{self.log_prefix} Acquired GPU Slot {acquired_slot}! Initializing CUDA context.", extra={"round": current_round})
+            
+            try:
+                # Execute training while holding the lock
+                return _run_core_training()
+            finally:
+                # Always release the lock, even if training crashes
+                fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_UN)
+                lock_file_handle.close()
+                self.logger.info(f"{self.log_prefix} Released GPU Slot {acquired_slot}.", extra={"round": current_round})
+                
+        else:
+            self.logger.info(f"{self.log_prefix} Bypassing lock for CPU execution.", extra={"round": current_round})
+            return _run_core_training()
 
     def _train_based_on_role(self, role: str, lr: float, current_round: int, active_loader: DataLoader, global_model: torch.nn.Module):
         """Executes the specific PyTorch optimization loop variant strictly dictated by the node's assigned profile role."""

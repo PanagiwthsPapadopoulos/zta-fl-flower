@@ -467,13 +467,23 @@ class FogAggregator(FedAvg):
     def _evaluate_rollback_sanity_check(self, aggregated_model: torch.nn.Module, round_display: int) -> None:
         """Evaluates the aggregated model and rolls back to a previous state if performance collapses."""
         if self.val_data is not None:
+            # Unpack the data locally
+            X_val, y_val = self.val_data
+        
             aggregated_model.eval()
+            
             # Disable gradient tracking to save memory
             with torch.no_grad():
-                X_val, y_val = self.val_data
-                # Calculate current accuracy of the model
-                preds = aggregated_model(X_val).argmax(dim=-1)
-                val_acc = (preds == y_val).float().mean().item()
+                # 1. Dynamically grab the device the aggregated model is currently on (GPU)
+                device = next(aggregated_model.parameters()).device
+    
+                # 2. Move the validation data to match
+                X_val_gpu = X_val.to(device)
+                y_val_gpu = y_val.to(device)
+
+                # 3. Existing line:
+                preds = aggregated_model(X_val_gpu).argmax(dim=-1)
+                val_acc = (preds == y_val_gpu).float().mean().item()
             
             # If this is the first time the check is running
             # Take a deep copy of the model's weights and save the accuracy

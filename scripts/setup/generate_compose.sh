@@ -103,6 +103,9 @@ if [ "$INSECURE_MODE" = false ]; then
 
   nginx-proxy:
     image: nginx:alpine
+    depends_on:
+      - cloud-superlink
+      - fog-1-superlink
     volumes: 
       - "$NGINX_CONF:/etc/nginx/nginx.conf:ro"
       - "$CERTS_DIR:/etc/nginx/certs:ro"
