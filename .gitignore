@@ -4,6 +4,7 @@ results/
 runtime/
 experiments_queue/
 notes/
+images/
 
 # Virtual Environments
 .venv-zta/
