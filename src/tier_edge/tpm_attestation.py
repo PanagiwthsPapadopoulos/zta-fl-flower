@@ -37,28 +37,17 @@ class TPMAttestation:
 
     def _provision_ak(self):
         try:
-            tpm_dir = "/app/runtime/tpm_state"
-            shared_ak_pub = None
-            
-            if os.path.exists(tpm_dir):
-                for dirname in os.listdir(tpm_dir):
-                    if dirname.startswith("edge_"):
-                        shared_ak_pub = os.path.join(tpm_dir, dirname, "ak.pub")
-                        break
-
             if subprocess.run(["tpm2_readpublic", "-c", "0x81010002"], capture_output=True).returncode == 0:
                 self.logger.info("TPMEngine: AK already exists in NVRAM.", extra={"round": self.current_round})
-                if shared_ak_pub and not os.path.exists(shared_ak_pub):
-                    subprocess.run(["tpm2_readpublic", "-c", "0x81010002", "-o", shared_ak_pub], check=True)
                 return 
-
+            
             subprocess.run(["tpm2_createprimary", "-C", "o", "-c", "/tmp/primary.ctx"], check=True)
             subprocess.run(["tpm2_evictcontrol", "-C", "o", "-c", "/tmp/primary.ctx", "0x81000001"], check=True)
             self._flush_tpm_memory()
             
             subprocess.run([
                 "tpm2_create", "-C", "0x81000001", 
-                "-G", "rsa2048:rsassa:null", "-g", "sha256",  
+                "-G", "rsa2048:rsassa:null", "-g", "sha256", 
                 "-a", "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign",
                 "-u", "/tmp/ak.pub", "-r", "/tmp/ak.priv"
             ], check=True)
@@ -66,8 +55,6 @@ class TPMAttestation:
             subprocess.run(["tpm2_load", "-C", "0x81000001", "-u", "/tmp/ak.pub", "-r", "/tmp/ak.priv", "-c", "/tmp/ak.ctx"], check=True)
             subprocess.run(["tpm2_evictcontrol", "-C", "o", "-c", "/tmp/ak.ctx", "0x81010002"], check=True)
             
-            if shared_ak_pub:
-                subprocess.run(["cp", "/tmp/ak.pub", shared_ak_pub], check=True)
         except Exception as e:
             self.logger.error(f"TPMEngine: Provisioning error: {str(e)}", extra={"round": self.current_round})
         finally:

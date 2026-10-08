@@ -3,7 +3,6 @@ from datetime import datetime
 
 import torch
 import numpy as np
-torch.set_num_threads(1)
 from torch.utils.data import DataLoader, TensorDataset
 
 from flwr.common import Context
@@ -12,6 +11,7 @@ from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from src.shared.utils.logger_setup import setup_logger
 from src.shared.data.data_loader import get_dataset, DATASET_METADATA
 from src.tier_cloud.global_evaluator import GlobalEvaluator
+from src.shared.utils.hardware import get_device
 
 
 def fit_config(server_round: int) -> dict:
@@ -80,6 +80,10 @@ def server_fn(context: Context) -> ServerAppComponents:
     run_config = get_merged_config(context.run_config)
     
     run_metadata = _build_run_metadata(run_config)
+    
+    # CPU-only thread pinning — only applied when we are actually running on CPU.
+    #if get_device() == "cpu":
+    torch.set_num_threads(1)
 
     tier = str(run_config.get("tier", "unknown"))
     raw_fog_id = str(run_config.get("fog_id", "cloud"))
@@ -133,7 +137,7 @@ def server_fn(context: Context) -> ServerAppComponents:
         dataset_path=dataset_path, 
         num_classes=num_classes, 
         n_features=n_features, 
-        device="cpu", 
+        device=get_device(), 
         random_seed=run_metadata["random_seed"], 
         run_metadata=run_metadata,
         tier=tier,
