@@ -1,24 +1,15 @@
 #!/bin/bash
 
 # =========================================================
-#   boot_network_docker.sh
+#   boot_network_sim_docker.sh
 # 
 #   Orchestrates the entire Dockerized Flower federation. 
-#   Generates the docker-compose topology, provisions TLS 
-#   certificates via mTLS, and boots the infrastructure layer.
-#
-# ARGUMENTS:
-#   --insecure : Optional. Disables mTLS and TLS and  
-#                runs all services in plain-text mode.
+#   Generates the docker-compose topology.
 # =========================================================
-
-# Default to secure mode (TLS/mTLS)
-INSECURE_MODE=false
 
 # =========================================================
 # PRE-FLIGHT CHECKS
 # =========================================================
-# Validate Dependencies
 for cmd in docker python3; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "FATAL: Required binary '$cmd' is not installed or not in PATH."
@@ -26,41 +17,35 @@ for cmd in docker python3; do
     fi
 done
 
-# Validate Docker Daemon
 if ! docker info >/dev/null 2>&1; then
     echo "FATAL: Docker daemon is not running or accessible."
     exit 1
 fi
 
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --insecure) INSECURE_MODE=true ;;
-        *) echo "Unknown parameter passed: $1"; exit 1 ;;
-    esac
-    shift
-done
-
 # =========================================================
 # PATH & ENVIRONMENT CONFIGURATION
 # =========================================================
-mkdir -p "$PROJECT_ROOT/runtime/infra"
-
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 export COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
 export LOG_DIR="$PROJECT_ROOT/logs"
-export CERTS_DIR="$PROJECT_ROOT/runtime/certs"
-export NGINX_CONF="$PROJECT_ROOT/runtime/infra/nginx.conf"
 
-# Dynamically determine a safe Compose project name based on the root directory
+# Check for --new-tpm flag
+for arg in "$@"; do
+    if [ "$arg" == "--new-tpm" ]; then
+        echo "🧹 --new-tpm flag detected. Clearing existing TPM state..."
+        rm -rf "$PROJECT_ROOT/runtime/tpm_state"
+        break
+    fi
+done
+
+mkdir -p "$PROJECT_ROOT/runtime/infra"
+
 PROJECT_DIR_NAME=$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
 COMPOSE_PROJECT_NAME="${PROJECT_DIR_NAME:-flwr-federation}"
 
 PIDS=()
 
-# =========================================================
-# UTILITIES: CLEANUP & TIMEZONE DETECTION
-# =========================================================
 cleanup() {
     echo -e "\n🛑 Caught Shutdown Signal (Ctrl+C / Ctrl+Z)! Shutting down the Docker Engine..."
     docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down --remove-orphans 2>/dev/null
@@ -83,60 +68,58 @@ echo "================================================="
 echo " 🔍 READING TOPOLOGY FROM network.yaml           "
 echo "================================================="
 
-# Execute the standalone Python parser
 CONFIG_VARS=$(python3 "$PROJECT_ROOT/scripts/setup/parse_topology.py")
 
-# Ensure the script didn't fail before evaluating
 if [ $? -ne 0 ]; then
     echo "$CONFIG_VARS"
     exit 1
 fi
 
-# Inject variables into the bash environment
 eval "$CONFIG_VARS"
 
-# =========================================================
-# 1. SECURITY SETUP & NGINX PROVISIONING
-# =========================================================
-if [ "$INSECURE_MODE" = false ]; then
-    echo "🔐 SECURITY ENABLED: Generating certificates and NGINX config..."
-    chmod +x "$PROJECT_ROOT/scripts/setup/setup_security.sh"
-    chmod +x "$PROJECT_ROOT/scripts/setup/setup_nginx.sh"
-    "$PROJECT_ROOT/scripts/setup/setup_security.sh" "$NUM_FOGS" "${EDGES_PER_FOG_ARRAY[*]}" "127.0.0.1"
-    "$PROJECT_ROOT/scripts/setup/setup_nginx.sh" "$NUM_FOGS" "${EDGES_PER_FOG_ARRAY[*]}" "127.0.0.1" "$FOG_FL_BASE" "true"
-fi
-
-# Provision the TPM Volumes for the Edge Nodes
+# Provision the TPM Volumes using the unmodifiable setup script
 chmod +x "$PROJECT_ROOT/scripts/setup/setup_tpm.sh"
 "$PROJECT_ROOT/scripts/setup/setup_tpm.sh" "$NUM_FOGS" "${EDGES_PER_FOG_ARRAY[*]}"
 
 # =========================================================
 # 2. IMAGE RETRIEVAL
 # =========================================================
+echo "================================================="
+echo " 2. IMAGE RETRIEVAL"
+echo "================================================="
 docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" down --remove-orphans 2>/dev/null
 mkdir -p "$LOG_DIR/system" "$LOG_DIR/nodes" "$PROJECT_ROOT/data" 
 
 if ! docker image inspect panagiotispapadopoulos/zta-cloud-node:latest >/dev/null 2>&1; then
     echo "⏳ Pulling Pre-Built Cloud Execution Image..."
     docker pull panagiotispapadopoulos/zta-cloud-node:latest
+else
+    echo "  ✅ Cloud image found locally. Skipping pull."
 fi
 
 if ! docker image inspect panagiotispapadopoulos/zta-edge-node:latest >/dev/null 2>&1; then
     echo "⏳ Pulling Pre-Built Edge Execution Image (TPM Enabled)..."
     docker pull panagiotispapadopoulos/zta-edge-node:latest
+else
+    echo "  ✅ Edge image found locally. Skipping pull."
 fi
 
 # =========================================================
 # 3. DOCKER COMPOSE TOPOLOGY GENERATION
 # =========================================================
-
+echo "================================================="
+echo " 3. DOCKER COMPOSE TOPOLOGY GENERATION"
+echo "================================================="
 echo "  Generating dynamic docker-compose.yml..."
-chmod +x "$PROJECT_ROOT/scripts/setup/generate_compose.sh"
-"$PROJECT_ROOT/scripts/setup/generate_compose.sh" "$INSECURE_MODE" "$HOST_TZ" "${EDGES_PER_FOG_ARRAY[*]}"
+chmod +x "$PROJECT_ROOT/scripts/simulation/generate_compose_sim.sh"
+"$PROJECT_ROOT/scripts/simulation/generate_compose_sim.sh" "$HOST_TZ" "${EDGES_PER_FOG_ARRAY[*]}"
 
 # =================================================
 #  4. BOOTING DOCKER FEDERATION                    
 # =================================================
+echo "================================================="
+echo " 4. BOOTING DOCKER FEDERATION                    "
+echo "================================================="
 cd "$PROJECT_ROOT" || exit 1
 
 echo "  Starting Docker Compose network and waiting for health checks..."
@@ -151,59 +134,24 @@ docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" logs -f > 
 PIDS+=($!)
 
 # =========================================================
-# 5 OFFLINE ZERO-TRUST NETWORK PROVISIONING (COLLECTOR)
+# 5. OFFLINE ZERO-TRUST NETWORK PROVISIONING (COLLECTOR)
 # =========================================================
 echo "================================================="
-echo " 🛡️  FACTORY PROVISIONING (COLLECTING STATES)     "
+echo " 5. OFFLINE ZERO-TRUST NETWORK PROVISIONING (COLLECTOR)"
 echo "================================================="
 
-# Calculate total number of edges
 TOTAL_EDGES=0
 for nodes in "${EDGES_PER_FOG_ARRAY[@]}"; do
     TOTAL_EDGES=$((TOTAL_EDGES + nodes))
 done
 
-# Export variables so the Python script knows what to look for and how many to wait for
 export TOTAL_EDGES="$TOTAL_EDGES"
 
 echo "  Polling for $TOTAL_EDGES Edge container TPM boot sequences to complete..."
-# Execute the decoupled script (which now handles its own deterministic polling)
 python3 "$PROJECT_ROOT/scripts/setup/collect_ledgers.py"
 
-# =================================================
-# 6. INJECTING GLOBAL CONFIGURATION (~/.flwr)     
-# =================================================
-FLWR_GLOBAL_DIR="$HOME/.flwr"
-mkdir -p "$FLWR_GLOBAL_DIR"
-
-cat <<EOF > "$FLWR_GLOBAL_DIR/config.toml"
-[superlink.cloud]
-address = "127.0.0.1:$CLOUD_CTRL"
-insecure = true
-
-[federation.cloud]
-address = "127.0.0.1:$CLOUD_CTRL"
-insecure = true
-EOF
-
-for i in $(seq 1 $NUM_FOGS); do
-    FOG_CTRL=$((FOG_CTRL_BASE + i))
-    cat <<EOF >> "$FLWR_GLOBAL_DIR/config.toml"
-
-[superlink.fog${i}]
-address = "127.0.0.1:${FOG_CTRL}"
-insecure = true
-
-[federation.fog${i}]
-address = "127.0.0.1:${FOG_CTRL}"
-insecure = true
-EOF
-done
-
 echo ""
-echo "✅ ENGINE IS LIVE. RUN DEPLOY_CODE_DOCKER.SH"
-
-# Create the state flag indicating the network is ready
+echo "✅ ENGINE IS LIVE. RUN DEPLOY_CODE_SIM_DOCKER.SH"
 touch "$PROJECT_ROOT/runtime/infra/.network_ready"
 
 wait

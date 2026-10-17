@@ -21,14 +21,11 @@ dependencies = [
 
 [tool.flwr.app]
 publisher = "PanagiwthsPapadopoulos"
-modules = { server = "src.core.server:app", client = "src.core.client:app" }
 
-exclude = [
-    "data/*",
-    "experiments/*",
-    "results/*",
-    "scripts/*",
-    "tests/*",
+fab-include = [
+    "pyproject.toml",
+    "src/**/*.py",
+    "config/**/*.yaml",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -39,7 +36,16 @@ serverapp = "src.entrypoints.server:app"
 clientapp = "src.entrypoints.client:app"
 
 [tool.flwr.app.config]
-fog_id = "fog_0"                          # String identifier for fog instances (ignored if tier is cloud)
-min-clients = 1                           # Minimum active connections required to begin a round
-tier = "cloud"                            # Operational level of this specific instance ("cloud" or "fog")
+mode = "deploy"
+fog_id = "fog_0"
+min_clients = 1
+tier = "cloud"
 
+
+# [tool.flwr.federations]
+# default = "local"
+
+# [tool.flwr.federations.local]
+# options.num-supernodes = 2                          # gets overwritten
+# options.backend.client-resources.num-cpus = 1       # Satisfies Flower's strict integer requirement
+# options.backend.client-resources.num-gpus = 0.0

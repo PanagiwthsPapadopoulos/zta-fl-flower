@@ -152,7 +152,7 @@ for i in $(seq 1 $NUM_FOGS); do
     FOG_CTRL=$((FOG_CTRL_BASE + i))
     
     echo "Shipping FAB to Fog $i (Expecting $CURRENT_EDGES edges)..."
-    flwr run . fog${i} --run-config "tier=\"fog\" min-clients=${SAFE_MIN_CLIENTS} fog_id=\"fog_${i}\"" --stream > "$LOG_DIR/system/run_fog${i}.log" 2>&1 &
+    flwr run . fog${i} --run-config "tier=\"fog\" min_clients=${SAFE_MIN_CLIENTS} fog_id=\"fog_${i}\"" --stream > "$LOG_DIR/system/run_fog${i}.log" 2>&1 &
 
     echo "  ⏳ Cooling down Fog $i stack..."
     wait_for_port 127.0.0.1 $FOG_CTRL
@@ -161,7 +161,7 @@ done
 sleep 2
 
 echo "Shipping FAB to Cloud ..."
-flwr run . cloud --run-config "tier=\"cloud\" min-clients=${NUM_FOGS}" --stream > "$LOG_DIR/system/run_cloud.log" 2>&1 &
+flwr run . cloud --run-config "tier=\"cloud\" min_clients=${NUM_FOGS}" --stream > "$LOG_DIR/system/run_cloud.log" 2>&1 &
 
 echo ""
 echo "✅ Global synchronization dispatched!"

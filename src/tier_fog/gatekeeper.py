@@ -33,9 +33,9 @@ class ZeroTrustGatekeeper:
                 with open(ledger_path, "r") as f:
                     return json.load(f)
             except json.JSONDecodeError:
-                self.logger.error(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger is corrupted or empty!", extra={"round": current_round})
+                self.logger.error(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger is corrupted or empty!", extra={"round": server_round})
         else:
-            self.logger.warning(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger missing at {ledger_path}! Network locked down.", extra={"round": current_round})
+            self.logger.warning(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger missing at {ledger_path}! Network locked down.", extra={"round": server_round})
         
         return {}
 
