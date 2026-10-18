@@ -7,8 +7,9 @@ name = "zta-fl-flower"
 version = "1.0.0"
 description = "A Flower-based framework for Zero-Trust Agentic Federated Learning in IIoT intrusion detection."
 license = { text = "MIT" }
+requires-python = ">=3.10,<4.0"
 dependencies = [
-    "flwr[simulation]>=1.9.0",
+    "flwr[simulation]==1.30.0",
     "torch>=2.2.0",
     "numpy>=1.26.0",
     "scikit-learn>=1.3.0",

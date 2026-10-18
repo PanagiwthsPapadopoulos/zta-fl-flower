@@ -49,7 +49,7 @@ services:
       - ${SHARED_DATA_MOUNT}:/app/data
       - ${SHARED_RESULTS_MOUNT}:/app/results
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
-      - ./runtime/tpm_state:/app/runtime/tpm_state:ro
+      - ./runtime/tpm_state:/app/runtime/tpm_state
       - ./src:/app/src:ro
     networks: [flwr-network]
     entrypoint: []

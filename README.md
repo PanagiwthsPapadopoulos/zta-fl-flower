@@ -117,7 +117,7 @@ zta-fl-flower/
 
 ## System Prerequisites
 
-This architecture heavily relies on **DOCKER** and **OPENSSL**. Before running the python environment or orchestration scripts, you must install the following:
+This architecture heavily relies on **[DOCKER](https://www.docker.com/products/docker-desktop)** or [**APPTAINER**](https://apptainer.org/docs/admin/main/installation.html) and **OPENSSL**. Before running the python environment or orchestration scripts, you must install the following:
 
 **Ubuntu/Debian:**
 ```bash
@@ -164,36 +164,47 @@ Configure which dataset to use by updating the `dataset` and `dataset_path` vari
 
 ---
 
-## Deploying the Distributed Network
+## Duality of Runs
 
-To run the full distributed Zero-Trust architecture, we use a dynamic orchestration script that spins up the Cloud SuperLink, Fog SuperNodes/SuperLinks, and Edge SuperNodes using Docker on a single machine.
+To support both real-world systems engineering and high-scale academic benchmarking, this repository implements two distinct execution architectures:
 
-> **Note:** Make sure the **DOCKER** daemon is running.
+| **Feature**             | **Deployment Mode**                                                                                          | **Simulation Mode**                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| **Primary Goal**        | Real-world 3-tier distributed systems Proof-of-Concept                                                       | High-scale paper benchmark reproduction (up to 100+ clients)                                                      |
+| **Flower Engine**       | [Deployment Runtime](https://flower.ai/docs/framework/deploy.html) (`SuperLink` / `SuperNode` / `SuperExec`) | [Simulation Runtime](https://flower.ai/docs/framework/how-to-run-simulations.html) (Ray-backed `flwr-simulation`) |
+| **Supported Platforms** | **Docker Compose** & **Apptainer** (Rootless/HPC)                                                            | **Docker Compose** & **Apptainer** (Rootless/HPC)                                                                 |
+| **Cloud Tier (Tier 1)** | Dedicated `cloud-superlink` + `cloud-serverapp`                                                              | Runs natively inside the `sim-cloud` engine container                                                             |
+| **Fog Tier (Tier 2)**   | Dual-stack bridge per Fog (`supernode` + `clientapp` upward; `superlink` + `serverapp` downward)             | Mathematically virtualized in-memory within `sim-cloud`                                                           |
+| **Edge Tier (Tier 3)**  | Dedicated `edge-supernode` + `edge-clientapp` + local `swtpm` per Edge                                       | Ephemeral Ray Actors in `sim-cloud` + $N$ external `sim-tpm-*` containers                                         |
+| **Network Security**    | Full **NGINX mTLS/TLS** reverse-proxy mesh (or `--insecure` plain-text)                                      | Internal Docker bridge network (TCP `:2321` for TPM traffic)                                                      |
 
-The following script builds the infrastructure that the code runs on top of. Use the `--insecure` flag to bypass mTLS and TLS.
-```bash
-git clone https://github.com/PanagiwthsPapadopoulos/zta-fl-flower.git
-cd zta-fl-flower
-chmod +x scripts/ops/boot_network_docker.sh
-./scripts/ops/boot_network_docker.sh
-```
-While keeping the above command running, in a new terminal run the following, which ships the `FAB` to the network:
-```bash
-cd zta-fl-flower
-chmod +x scripts/ops/deploy_code_docker.sh
-./scripts/ops/deploy_code_docker.sh
-```
+### 1. [Deployment Mode](DEPLOYMENT.md)
 
-> 🛑 **CRITICAL WARNING: GLOBAL CONFIGURATION OVERWRITE**
-> 
-> In current versions of Flower, routing is managed globally via the `~/.flwr/config.toml` file. According to **[Flower Issue #6824](https://github.com/flwrlabs/flower/issues/6824)**, there is currently no native support for isolated, per-project SuperLink configurations.
-> 
-> Because this deployment script requires specific, dynamic port routing to orchestrate the 3-tier architecture, it **will overwrite your global `~/.flwr/config.toml` file.**
-> 
-> **You MUST back up your existing `~/.flwr/config.toml` before running this script** if you have other active Flower endpoints saved on your machine. The script will prompt you for confirmation before making any destructive changes.
+Designed as a systems Proof-of-Concept, **Deployment Mode** demonstrates how Flower's [Deployment Runtime](https://flower.ai/docs/framework/deploy.html) can be indirectly orchestrated into a true **3-tier hierarchical federated learning network** across isolated containers or processes:
 
-> **Note:** Windows users must use WSL (Windows Subsystem for Linux) to run the orchestration bash scripts
+- **True Multi-Tier Isolation:** Every network component runs as an independent service. Each **Fog Node (Tier 2)** acts as a bidirectional relay consisting of four services: a downward-facing `fog-superlink` + `fog-serverapp` that aggregates and filters its assigned **Edge Nodes (Tier 3)**, paired with an upward-facing `fog-supernode` + `fog-clientapp` that reports the fog-aggregated update to the **Cloud (Tier 1)**.
+    
+- **End-to-End Zero-Trust mTLS & Hardware Attestation:** By default, `boot_network_docker.sh` and `boot_network_apptainer.sh` provision a complete Public Key Infrastructure (`setup_security.sh`) and spin up an **NGINX mTLS reverse proxy** (`setup_nginx.sh`) to authenticate and encrypt inter-tier gRPC traffic. Each Edge node boots with an isolated `swtpm` software TPM 2.0 instance (via TCP in Docker or UNIX sockets in Apptainer) whose factory state is collected into the TrustDB before training starts (`collect_ledgers.py`).
+    
+- **Multi-Federation FAB Dispatch:** Once the infrastructure is live, `deploy_code_docker.sh` (or `deploy_code_apptainer.sh`) compiles the dataset artifacts and ships Flower App Bundles (`flwr run`) independently to each `fog{i}` federation and finally to the `cloud` federation.
+    
 
+👉 **[Read the full Deployment Mode Guide (DEPLOYMENT.md)](DEPLOYMENT.md)** for setup instructions and restrictions.
+
+### 2. [Simulation Mode](SIMULATION.md)
+
+Designed to verify the large-scale experimental results of the original ZTA-FL paper without the CPU/RAM overhead of running hundreds of separate gRPC daemons, **Simulation Mode** uses a hybrid architecture combining Flower's [Simulation Runtime](https://flower.ai/docs/framework/how-to-run-simulations.html) with externalized hardware security containers:
+
+- **Centralized Simulation Engine (`sim-cloud`):** A single main container runs the entire federated learning training loop. `deploy_code_sim_docker.sh` dynamically rewrites `pyproject.toml` (`options.num-supernodes = TOTAL_EDGES`) and dispatches a single local simulation run.
+    
+- **Virtualized Fog Tier & Ephemeral Ray Edges:** Edge nodes (Tier 3) are scheduled dynamically as ephemeral Ray actors inside `sim-cloud`, while the Fog tier (Tier 2) is mathematically simulated in-process. This preserves 100% of the hierarchical SHAP stability scoring, Byzantine filtering, and TrustDB attestation logic while scaling smoothly up to 100+ clients.
+    
+- **Externalized TPM 2.0 Container Array (`sim-tpm-{i}-{j}`):** To keep cryptographic hardware attestation completely authentic during simulation, `generate_compose_sim.sh` spawns $N$ lightweight companion containers (where $N$ is the total number of edge nodes). Each `sim-tpm-{i}-{j}` container runs a dedicated `swtpm` TCP server on port `2321`, allowing ephemeral Ray actors inside `sim-cloud` to request real hardware-signed quotes over the Docker bridge network.
+    
+
+👉 **[Read the full Simulation Mode Guide (SIMULATION.md)](SIMULATION.md)** for instructions on booting the hybrid network and scaling client counts.
+
+---
 
 ## Monitoring & Logs
 The terminal displays the architecture map and then holds the process. The flow of the pipeline for the whole network written to the `logs/` directory:
@@ -211,8 +222,9 @@ tail -f logs/nodes/edge_1_1/edge_1_1.jsonl
 Otherwise, you can watch the pipeline update live using the following command:
 
 ```python
-python3 verification/verify_pipeline.py -w
+python3 verification/verify_pipeline.py --live
 ```
+
 > **Note:** The `logs/` directory is **wiped clean at the start of every run.** Ensure you export any critical log instances before restarting the network.
 
 ---

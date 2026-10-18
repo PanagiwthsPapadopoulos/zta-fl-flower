@@ -1,12 +1,22 @@
+"""Pipeline monitor: unchanged phase logic, scroll-safe terminal output.
+
+Use -w for append-only history; --live for a bounded alternate-screen display.
+"""
 import os
 import re
 import glob
 import json
 import time
 import argparse
+import math
+import signal
+import sys
+from contextlib import contextmanager
 from collections import defaultdict
 
 from rich.console import Console
+from rich.markup import escape
+from rich.segment import Segment
 from rich.panel import Panel
 from rich.table import Table
 from rich.live import Live
@@ -202,9 +212,6 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
 
     t = Table.grid(padding=(0, 0))
     has_pending_phase = False
-
-    t = Table.grid(padding=(0, 0))
-    has_pending_phase = False
     
     def get_completed_title(text):
         # Changed completed color to green text instead of white text
@@ -247,18 +254,16 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
             if f_serv not in state["fog_servers_started"]:
                 msg = state["latest_fog_msg"].get(f_serv, "Awaiting initial log message...")
                 short_msg = (msg[:60] + "...") if len(msg) > 60 else msg
-                # Changed "bold red" to "bold white" below
                 color = "bold green" if any(k in msg for k in ["Booting", "Listening", "Blocking", "established", "START"]) else "bold white"
-                t.add_row(f"    [{color}]{f_serv}:[/] [dim white]{short_msg}[/]")
+                t.add_row(f"    [{color}]{safe_markup(f_serv)}:[/] [dim white]{safe_markup(short_msg)}[/]")
                 
         t.add_row("  [bold white]Awaiting Fog Clients:[/]")
         for f_client in sorted(topology["fog_clients"]):
             if f_client not in state["fog_clients_started"]:
                 msg = state["latest_fog_msg"].get(f_client, "Awaiting initial log message...")
                 short_msg = (msg[:60] + "...") if len(msg) > 60 else msg
-                # Changed "bold red" to "bold white" below
                 color = "bold green" if any(k in msg for k in ["Attempting", "established", "Connected", "dispatched"]) else "bold white"
-                t.add_row(f"    [{color}]{f_client}:[/] [dim white]{short_msg}[/]")
+                t.add_row(f"    [{color}]{safe_markup(f_client)}:[/] [dim white]{safe_markup(short_msg)}[/]")
                 
         has_pending_phase = True
 
@@ -278,11 +283,11 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
         for edge in sorted(topology["edges"]):
             if edge not in state["edges_trained"]:
                 if edge in state.get("edge_epochs", {}):
-                    t.add_row(f"  [bold white]{edge}:[/] [green]Training: {state['edge_epochs'][edge]}[/]")
+                    t.add_row(f"  [bold white]{safe_markup(edge)}:[/] [green]Training: {safe_markup(state['edge_epochs'][edge])}[/]")
                 else:
                     msg = state["latest_edge_msg"].get(edge, "Awaiting initial log message...")
                     short_msg = (msg[:60] + "...") if len(msg) > 60 else msg
-                    t.add_row(f"  [bold white]{edge}[/] [dim white]latest log message:[/] [dim white]{short_msg}[/]")
+                    t.add_row(f"  [bold white]{safe_markup(edge)}[/] [dim white]latest log message:[/] [dim white]{safe_markup(short_msg)}[/]")
         has_pending_phase = True
 
     # ---------------------------
@@ -302,7 +307,7 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
             if edge not in state["edge_tokens_generated"]:
                 msg = state["latest_edge_msg"].get(edge, "Awaiting token...")
                 short_msg = (msg[:60] + "...") if len(msg) > 60 else msg
-                t.add_row(f"  [bold white]{edge}[/] [dim white]latest log message:[/] [dim white]{short_msg}[/]")
+                t.add_row(f"  [bold white]{safe_markup(edge)}[/] [dim white]latest log message:[/] [dim white]{safe_markup(short_msg)}[/]")
         has_pending_phase = True
 
     # ---------------------------
@@ -314,9 +319,9 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
             t.add_row(get_progress_bar("  Tokens received:", n_edges, n_edges))
             t.add_row(get_progress_bar("  Tokens parsed:", n_edges, n_edges))
             
-            if len(state["edge_tokens_rejected"]) > 0:
-                for rej, error_msg in state["edge_tokens_rejected"].items():
-                    t.add_row(f"  [bold red]✖ Rejected: {rej} - {error_msg}[/]")
+        if len(state["edge_tokens_rejected"]) > 0:
+            for rej, error_msg in state["edge_tokens_rejected"].items():
+                t.add_row(f"  [bold red]✖ Rejected: {safe_markup(rej)} - {safe_markup(error_msg)}[/]")
     elif has_pending_phase and highest_phase < 5 and is_current_round:
         t.add_row("[dim white]▶ Upcoming: Verifying Attestation Tokens...[/]")
     else:
@@ -327,7 +332,7 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
         
         if len(state["edge_tokens_rejected"]) > 0:
             for rej, error_msg in state["edge_tokens_rejected"].items():
-                t.add_row(f"  [bold red]✖ Rejected: {rej} - {error_msg}[/]")
+                t.add_row(f"  [bold red]✖ Rejected: {safe_markup(rej)} - {safe_markup(error_msg)}[/]")
         has_pending_phase = True
 
     # ---------------------------
@@ -345,10 +350,9 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
         t.add_row("  [dim white]Awaiting for:[/]")
         for f_serv in sorted(topology["fog_servers"]):
             if f_serv not in state["fog_servers_aggregated"]:
-                # Grabbing the latest log message and outputting in standard gray
                 msg = state["latest_fog_msg"].get(f_serv, "Awaiting initial log message...")
                 short_msg = (msg[:60] + "...") if len(msg) > 60 else msg
-                t.add_row(f"  [bold white]{f_serv}[/] [dim white]latest log message:[/] [dim white]{short_msg}[/]")
+                t.add_row(f"  [bold white]{safe_markup(f_serv)}[/] [dim white]latest log message:[/] [dim white]{safe_markup(short_msg)}[/]")
         has_pending_phase = True
 
     # ---------------------------
@@ -392,7 +396,7 @@ def build_round_panel(r_num, max_rounds, state, topology, is_current_round=True,
     return Panel(t, title=f"[{title_color}]Round {r_num}/{max_rounds}[/]", title_align="left", border_style="grey37", style=style, box=box.SQUARE)
 
 def generate_dashboard(logs, printed_rounds=None):
-    """Build TUI dashboard, separating completed rounds from active ones."""
+    """Build TUI dashboard with all rounds rendered in chronological order."""
     if printed_rounds is None:
         printed_rounds = set()
         
@@ -466,10 +470,9 @@ def generate_dashboard(logs, printed_rounds=None):
         if should_expand:
             main_table.add_row(build_round_panel(r_num, max_rounds, state, topology, is_expanded=True))
         else:
-            # Round is entirely finished and NOT the latest. 
-            # We add it to the completed list to be printed permanently to stdout.
             panel = Panel(f"[dim green]✔ Round {r_num} Completed[/]", border_style="grey37", box=box.SQUARE)
             completed_panels.append((r_num, panel))
+            main_table.add_row(panel)
             
         if is_fully_complete and is_latest:
             pipeline_completed = True
@@ -480,37 +483,256 @@ def generate_dashboard(logs, printed_rounds=None):
 
     return completed_panels, main_table
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-w", "--watch", action="store_true", help="Run in continuous live watch mode")
-    args = parser.parse_args()
 
-    if args.watch:
-        printed_rounds = set()
-        # No screen=True here, so it prints directly to the standard buffer
-        with Live(console=console, auto_refresh=False) as live:
-            try:
-                while True:
-                    logs = load_logs()
-                    
-                    # Get permanently finished rounds AND the active live view
-                    completed_panels, live_view = generate_dashboard(logs, printed_rounds)
-                    
-                    # Print the completed panels permanently ABOVE the live display
-                    # This allows standard scrollback buffer tracking and auto-scrolling
-                    for r_num, panel in completed_panels:
-                        console.print(panel)
-                        printed_rounds.add(r_num)
-                        
-                    # Update only the current active round(s)
-                    live.update(live_view, refresh=True)
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                pass
-    else:
-        logs = load_logs()
-        _, live_view = generate_dashboard(logs)
-        console.print(live_view)
+# Presentation-only helpers. Never feed sanitized text back into the log parser.
+_ANSI_ESCAPE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC: title / hyperlink
+    r"|\x1b[P^_X].*?\x1b\\"                # DCS / PM / APC / SOS
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"             # CSI: color / cursor / erase
+    r"|\x1b[@-_]",                          # Other ESC commands
+    re.DOTALL,
+)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def safe_markup(value):
+    """Display log data literally, without allowing it to control the terminal."""
+    text = _ANSI_ESCAPE.sub("", str(value))
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    return escape(_CONTROL_CHARS.sub("", text))
+
+
+class ASCIIView:
+    """Optional encoding fallback; the normal Unicode design stays unchanged."""
+
+    _translation = str.maketrans({
+        "\u2500": "-", "\u2501": "=", "\u2502": "|", "\u2503": "|",
+        "\u250c": "+", "\u2510": "+", "\u2514": "+", "\u2518": "+",
+        "\u251c": "+", "\u2524": "+", "\u252c": "+", "\u2534": "+", "\u253c": "+",
+        "\u2578": ">", "\u257a": "-", "\u2714": "+", "\u2716": "x",
+        "\u25b6": ">", "\u25ef": "o", "\u2726": "*", "\u2026": ".",
+    })
+
+    def __init__(self, renderable):
+        self.renderable = renderable
+
+    def __rich_console__(self, render_console, options):
+        for segment in render_console.render(self.renderable, options):
+            text = segment.text.translate(self._translation)
+            text = text.encode("ascii", "replace").decode("ascii")
+            yield Segment(text, segment.style, segment.control)
+
+
+def stdout_is_tty():
+    # Check the real stream, not FORCE_COLOR / TTY_COMPATIBLE overrides.
+    try:
+        return bool(sys.stdout.isatty())
+    except (AttributeError, OSError):
+        return False
+
+
+def make_console(plain=False):
+    capable = stdout_is_tty() and os.environ.get("TERM", "").lower() not in {
+        "dumb", "unknown"
+    }
+    return Console(
+        file=sys.stdout,
+        force_terminal=None if capable else False,
+        force_jupyter=False,
+        color_system=None if plain or not capable else "auto",
+        safe_box=True,
+        emoji=False,
+    )
+
+
+def update_width(render_console, requested_width=None):
+    """Refresh the real terminal width; stale COLUMNS must not cause wrapping."""
+    width = None
+    if stdout_is_tty():
+        try:
+            width = os.get_terminal_size(sys.stdout.fileno()).columns
+        except (AttributeError, OSError, ValueError):
+            pass
+    if width is None or width < 1:
+        width = requested_width or render_console.width
+    elif requested_width is not None:
+        width = min(width, requested_width)
+    render_console.width = max(1, width)
+    # Height remains automatic except when the actual TTY can be queried.
+    if stdout_is_tty():
+        try:
+            height = os.get_terminal_size(sys.stdout.fileno()).lines
+            if height > 0:
+                render_console.height = height
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+def full_dashboard(logs, ascii_only=False):
+    """Compose all round panels in chronological order."""
+    _, view = generate_dashboard(logs)
+    return ASCIIView(view) if ascii_only else view
+
+
+def render_snapshot(render_console, renderable):
+    """Render one immutable frame for printing and change detection."""
+    with render_console.capture() as capture:
+        render_console.print(renderable)
+    return capture.get()
+
+
+def write_snapshot(render_console, frame):
+    # No cursor movement, screen erasure, or carriage-return repainting here.
+    render_console.file.write(frame)
+    render_console.file.flush()
+
+
+def watch_snapshots(render_console, interval=1.0, width=None, ascii_only=False):
+    """Append changed frames only. Previously printed lines are never redrawn."""
+    previous_frame = None
+    while True:
+        update_width(render_console, width)
+        frame = render_snapshot(render_console, full_dashboard(load_logs(), ascii_only))
+        if frame != previous_frame:
+            write_snapshot(render_console, frame)
+            previous_frame = frame
+        time.sleep(interval)
+
+
+def watch_fullscreen(render_console, interval=1.0, width=None, ascii_only=False):
+    """Explicit one-screen view; Ctrl+C restores the prompt and prints a snapshot."""
+    update_width(render_console, width)
+    latest_logs = load_logs()
+    latest_view = full_dashboard(latest_logs, ascii_only)
+    live = Live(
+        latest_view,
+        console=render_console,
+        screen=True,
+        transient=True,
+        auto_refresh=False,
+        vertical_overflow="ellipsis",
+    )
+    try:
+        try:
+            # Explicit finally also handles interrupts DURING start/first render,
+            # before a context manager's __enter__ would have returned.
+            live.start(refresh=True)
+            while True:
+                update_width(render_console, width)
+                latest_logs = load_logs()
+                latest_view = full_dashboard(latest_logs, ascii_only)
+                live.update(latest_view, refresh=True)
+                time.sleep(interval)
+        finally:
+            live.stop()
+            # Also restore if a signal arrived while alternate-screen entry was
+            # being written, before Live recorded its successful transition.
+            render_console.show_cursor(True)
+            if render_console.is_alt_screen:
+                render_console.set_alt_screen(False)
+    except KeyboardInterrupt:
+        # Live has already restored cursor visibility and the normal screen.
+        update_width(render_console, width)
+        final_view = full_dashboard(latest_logs, ascii_only)
+        write_snapshot(render_console, render_snapshot(render_console, final_view))
+
+
+@contextmanager
+def graceful_termination():
+    """Let Live's context manager restore terminal state on normal SIGTERM."""
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def stop(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def positive_seconds(value):
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("interval must be a positive number") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("interval must be a finite positive number")
+    return seconds
+
+
+def positive_width(value):
+    try:
+        width = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("width must be a positive integer") from exc
+    if width < 1:
+        raise argparse.ArgumentTypeError("width must be a positive integer")
+    return width
+
+
+def main():
+    global LOG_DIR, console
+    parser = argparse.ArgumentParser(
+        description="Read pipeline logs using the original dashboard and phase rules.",
+        epilog=(
+            "Watch mode appends changed snapshots for safe terminal scrollback. "
+            "Full-screen mode is an optional bounded viewport, not scrollback."
+        ),
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "-w", "--watch", action="store_true",
+        help="watch using append-only changed snapshots (scroll-safe)",
+    )
+    mode.add_argument(
+        "--live", action="store_true",
+        help="watch in the alternate screen; use --watch for full scrollback",
+    )
+    parser.add_argument("--interval", type=positive_seconds, default=1.0,
+                        help="watch refresh interval in seconds (default: 1)")
+    parser.add_argument("--width", type=positive_width,
+                        help="maximum output width; clamped to the real TTY width")
+    parser.add_argument("--log-dir", default=LOG_DIR,
+                        help="log directory (default: logs/nodes, relative to cwd)")
+    parser.add_argument("--plain", action="store_true",
+                        help="disable all ANSI color/style output")
+    parser.add_argument("--ascii", action="store_true",
+                        help="use ASCII fallback glyphs without changing phase logic")
+    args = parser.parse_args()
+    LOG_DIR = args.log_dir
+    console = make_console(args.plain)
+
+    # Keep the existing Unicode graphics unless the stream cannot encode them.
+    ascii_only = args.ascii
+    if not ascii_only:
+        try:
+            "\u250c\u2500\u2502\u2714\u2716\u25b6\u25ef\u2726".encode(
+                getattr(sys.stdout, "encoding", None) or "utf-8")
+        except (UnicodeEncodeError, LookupError):
+            ascii_only = True
+
+    interactive = (stdout_is_tty() and console.is_terminal
+                   and not console.is_dumb_terminal and not console.is_jupyter
+                   and not console.legacy_windows and console.is_interactive)
+    try:
+        with graceful_termination():
+            if args.live and interactive:
+                watch_fullscreen(console, args.interval, args.width, ascii_only)
+            elif args.watch or args.live:
+                if args.live:
+                    print("No interactive terminal: using scroll-safe snapshots.", file=sys.stderr)
+                watch_snapshots(console, args.interval, args.width, ascii_only)
+            else:
+                update_width(console, args.width)
+                write_snapshot(console, render_snapshot(console, full_dashboard(load_logs(), ascii_only)))
+    except KeyboardInterrupt:
+        pass
+    except BrokenPipeError:
+        # E.g. '| head': avoid a traceback and a second failure during shutdown.
+        sys.stdout = open(os.devnull, "w")
+
 
 if __name__ == "__main__":
     main()
