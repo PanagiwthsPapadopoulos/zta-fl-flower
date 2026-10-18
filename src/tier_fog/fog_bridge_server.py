@@ -24,15 +24,27 @@ class FogBridgeServer:
         """Binds the server socket to the designated IPC port and initiates the listening state."""
         try:
             self.logger.debug(f"{self.log_prefix} [IPC SERVER] Booting IPC listener on 0.0.0.0:{self.ipc_port}...", extra={"round": self.current_round})
-            self.ipc_server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.ipc_server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.ipc_server_sock.settimeout(self.socket_timeout)
-            self.ipc_server_sock.bind(("0.0.0.0", self.ipc_port))
-            self.ipc_server_sock.listen(1)
+            
+            # Create a local socket instance first
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except (AttributeError, OSError):
+                pass
+
+            sock.settimeout(self.socket_timeout)
+            sock.bind(("0.0.0.0", self.ipc_port))
+            sock.listen(1)
+            
+            # Assign only after successful binding
+            self.ipc_server_sock = sock
             self.logger.info(f"{self.log_prefix} [IPC SERVER] Listening on port {self.ipc_port}. Awaiting local Fog Client bridge...", extra={"round": self.current_round})
         except Exception as e:
-            self.logger.debug(f"{self.log_prefix} [IPC SERVER] Non-fatal exception during socket bind: {e}", extra={"round": self.current_round})
+            self.logger.error(f"{self.log_prefix} [IPC SERVER] FATAL: Failed to bind IPC port {self.ipc_port}: {e}", extra={"round": self.current_round})
             self.ipc_server_sock = None
+            raise e
 
     def wait_for_start(self) -> int:
         """Blocks execution to await an incoming START payload from a connected Fog Bridge Client."""

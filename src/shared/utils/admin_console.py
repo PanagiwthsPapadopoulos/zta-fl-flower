@@ -12,7 +12,7 @@ class AdminConsole:
             from src.shared.utils.config_loader import load_yaml_configs
             self.scheduled_actions = load_yaml_configs().get("admin_actions", [])
         except Exception as e:
-            self.logger.error(f"[ADMIN CONSOLE] Failed to load admin config: {e}", extra={"round": current_round})
+            self.logger.error(f"[ADMIN CONSOLE] Failed to load admin config: {e}", extra={"round": 0})
             self.scheduled_actions = []
 
     def execute_scheduled_updates(self, current_round: int, fog_num: int):
@@ -26,9 +26,9 @@ class AdminConsole:
                         self.logger.warning(f"[ADMIN CONSOLE] Injecting malicious firmware to physical environment.", extra={"round": current_round})
                     else:
                         self.logger.info(f"[ADMIN CONSOLE] Deploying legitimate firmware update to physical environment.", extra={"round": current_round})
-                    self._process_physical_update(action.get("target_edge"), fog_num)
+                    self._process_physical_update(action.get("target_edge"), fog_num, current_round)
 
-    def _process_physical_update(self, edge_num: int, fog_num: int):
+    def _process_physical_update(self, edge_num: int, fog_num: int, current_round: int = 0):
         dirname = f"edge_{fog_num}_{edge_num}"
         ledger_path = f"/app/runtime/tpm_state/pcr_ledger.json"
         id_path = f"/app/runtime/tpm_state/{dirname}/tpm_id.txt"

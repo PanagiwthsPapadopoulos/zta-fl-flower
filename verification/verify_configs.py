@@ -11,7 +11,7 @@ IGNORE_VARS = {
     "broker_ip", "socket_timeout", "cloud_sa_port", "cloud_fl_port", 
     "cloud_ctrl_port", "fog_sa_base", "fog_fl_base", "fog_ctrl_base", 
     "fog_client_io_base", "fog_ipc_base", "edge_client_io_base",
-    "tier", "fog_id", "min-clients", "num_fogs", "uniform_edges_per_fog", 
+    "tier", "fog_id", "min_clients", "num_fogs", "uniform_edges_per_fog", 
     "custom_fog_topology", "run_name", "num_rounds", "robustness_eval_attack",
     "power_law_a"
 }

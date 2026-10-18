@@ -4,3 +4,4 @@ imbalanced-learn
 PyYAML
 matplotlib
 rich
+flwr[simulation]==1.30.0

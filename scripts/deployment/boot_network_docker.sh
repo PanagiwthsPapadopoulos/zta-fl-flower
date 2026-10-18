@@ -43,7 +43,6 @@ done
 # =========================================================
 # PATH & ENVIRONMENT CONFIGURATION
 # =========================================================
-mkdir -p "$PROJECT_ROOT/runtime/infra"
 
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -51,6 +50,9 @@ export COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
 export LOG_DIR="$PROJECT_ROOT/logs"
 export CERTS_DIR="$PROJECT_ROOT/runtime/certs"
 export NGINX_CONF="$PROJECT_ROOT/runtime/infra/nginx.conf"
+
+mkdir -p $PROJECT_ROOT/runtime/infra/
+touch $NGINX_CONF
 
 # Dynamically determine a safe Compose project name based on the root directory
 PROJECT_DIR_NAME=$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
@@ -131,8 +133,8 @@ fi
 # =========================================================
 
 echo "  Generating dynamic docker-compose.yml..."
-chmod +x "$PROJECT_ROOT/scripts/setup/generate_compose.sh"
-"$PROJECT_ROOT/scripts/setup/generate_compose.sh" "$INSECURE_MODE" "$HOST_TZ" "${EDGES_PER_FOG_ARRAY[*]}"
+chmod +x "$PROJECT_ROOT/scripts/deployment/generate_compose.sh"
+"$PROJECT_ROOT/scripts/deployment/generate_compose.sh" "$INSECURE_MODE" "$HOST_TZ" "${EDGES_PER_FOG_ARRAY[*]}"
 
 # =================================================
 #  4. BOOTING DOCKER FEDERATION                    

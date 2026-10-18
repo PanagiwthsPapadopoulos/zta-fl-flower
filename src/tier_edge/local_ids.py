@@ -71,8 +71,8 @@ class EdgeTrainer:
             
             # Generate TPM token
             from src.tier_edge.tpm_attestation import TPMAttestation
-            tpm_engine = TPMAttestation(logger=self.logger, current_round=current_round)
-            nonce = config.get("nonce", f"round_{current_round}_default")
+            tpm_engine = TPMAttestation(logger=self.logger, current_round=current_round, insecure_mode=False)
+            nonce = config.get("nonce", "00000000000000000000000000000000")
             tpm_token = tpm_engine.generate_attestation_token(nonce=nonce, software_label=self.log_prefix, round_num=current_round)
             metadata["tpm_token_json"] = json.dumps(tpm_token)
             
@@ -93,9 +93,9 @@ class EdgeTrainer:
             return final_params, len(self.train_loader.dataset), metadata
 
         # ==========================================
-        # EXECUTION ROUTER (GPU LOCK vs CPU BYPASS)
+        # EXECUTION ROUTER (GPU LOCK vs CPU/SIM BYPASS)
         # ==========================================
-        if self.device != "cpu":
+        if self.device != "cpu" and self.train_config.get("use_gpu_lock", False):
             max_slots = int(self.train_config.get("max_concurrent_gpus", 1))
             lock_dir = "/app/runtime/locks"
             acquired_slot = None

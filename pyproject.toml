@@ -7,8 +7,9 @@ name = "zta-fl-flower"
 version = "1.0.0"
 description = "A Flower-based framework for Zero-Trust Agentic Federated Learning in IIoT intrusion detection."
 license = { text = "MIT" }
+requires-python = ">=3.10,<4.0"
 dependencies = [
-    "flwr[simulation]>=1.9.0",
+    "flwr[simulation]==1.30.0",
     "torch>=2.2.0",
     "numpy>=1.26.0",
     "scikit-learn>=1.3.0",
@@ -21,14 +22,11 @@ dependencies = [
 
 [tool.flwr.app]
 publisher = "PanagiwthsPapadopoulos"
-modules = { server = "src.core.server:app", client = "src.core.client:app" }
 
-exclude = [
-    "data/*",
-    "experiments/*",
-    "results/*",
-    "scripts/*",
-    "tests/*",
+fab-include = [
+    "pyproject.toml",
+    "src/**/*.py",
+    "config/**/*.yaml",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -39,7 +37,16 @@ serverapp = "src.entrypoints.server:app"
 clientapp = "src.entrypoints.client:app"
 
 [tool.flwr.app.config]
-fog_id = "fog_0"                          # String identifier for fog instances (ignored if tier is cloud)
-min-clients = 1                           # Minimum active connections required to begin a round
-tier = "cloud"                            # Operational level of this specific instance ("cloud" or "fog")
+mode = "deploy"
+fog_id = "fog_0"
+min_clients = 1
+tier = "cloud"
 
+
+# [tool.flwr.federations]
+# default = "local"
+
+# [tool.flwr.federations.local]
+# options.num-supernodes = 2                          # gets overwritten
+# options.backend.client-resources.num-cpus = 1       # Satisfies Flower's strict integer requirement
+# options.backend.client-resources.num-gpus = 0.0
