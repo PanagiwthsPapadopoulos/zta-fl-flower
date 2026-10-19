@@ -168,26 +168,46 @@ default = "local"
 address = ":local:"
 EOF
 
-# Create a runtime patch script in /tmp to intercept tpm2 calls and map UNIX sockets dynamically
+# Create a runtime patch script in /tmp to:
+# 1. Intercept tpm2_* calls and rewrite "swtpm:host=tpm-X-Y..." directly to the UNIX socket path
+# 2. Increase Flower's round_timeout so 100-edge simulations do not time out at 180s
 cat << 'EOF' > /tmp/tpm_socket_patch.py
 import subprocess, inspect, os, re
 
 _orig_run = subprocess.run
 def _patched_run(cmd, *args, **kwargs):
     if isinstance(cmd, list) and len(cmd) > 0 and str(cmd[0]).startswith("tpm2_"):
-        frame = inspect.currentframe()
-        while frame:
-            for k, v in frame.f_locals.items():
-                if isinstance(v, str) and "[EDGE" in v:
-                    m = re.search(r'\[EDGE (\d+)_(\d+)\]', v)
-                    if m:
-                        f_num, e_num = m.groups()
-                        sock_path = f"/app/runtime/tpm_state/edge_{f_num}_{e_num}/swtpm.sock"
-                        os.environ["TPM2TOOLS_TCTI"] = f"swtpm:path={sock_path}"
-            frame = frame.f_back
+        tcti = os.environ.get("TPM2TOOLS_TCTI", "")
+        m = re.search(r'tpm-(\d+)-(\d+)', tcti)
+        if not m:
+            frame = inspect.currentframe()
+            while frame:
+                for v in frame.f_locals.values():
+                    if isinstance(v, str) and "[EDGE" in v:
+                        m = re.search(r'\[EDGE (\d+)_(\d+)\]', v)
+                        if m:
+                            break
+                if m:
+                    break
+                frame = frame.f_back
+        if m:
+            f_num, e_num = m.groups()
+            sock_path = f"/app/runtime/tpm_state/edge_{f_num}_{e_num}/swtpm.sock"
+            os.environ["TPM2TOOLS_TCTI"] = f"swtpm:path={sock_path}"
     return _orig_run(cmd, *args, **kwargs)
 
 subprocess.run = _patched_run
+
+try:
+    import flwr.server.server_config as _sc
+    _orig_sc_init = _sc.ServerConfig.__init__
+    def _patched_sc_init(self, num_rounds=1, round_timeout=None):
+        if round_timeout is not None and round_timeout < 3600.0:
+            round_timeout = 3600.0
+        _orig_sc_init(self, num_rounds=num_rounds, round_timeout=round_timeout)
+    _sc.ServerConfig.__init__ = _patched_sc_init
+except Exception:
+    pass
 EOF
 
 touch "$PROJECT_ROOT/config/training.yaml"
@@ -202,8 +222,13 @@ apptainer exec --writable-tmpfs $GPU_ARGS --pwd /app \
     --env N_SIM="${TOTAL_EDGES}" \
     --env FLWR_HOME="$FLWR_TMP_HOME" \
     --env PYTHONPATH="/tmp" \
+    --env OMP_NUM_THREADS=1 \
+    --env MKL_NUM_THREADS=1 \
+    --env OPENBLAS_NUM_THREADS=1 \
+    --env TORCH_NUM_THREADS=1 \
     --env RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 \
     --env RAY_INCLUDE_DASHBOARD=0 \
+    --env RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0 \
     --bind "$PROJECT_ROOT:/app" \
     --bind "$LOG_DIR/nodes/cloud:/app/logs" \
     --bind "$LOG_DIR/system:/app/logs/system" \
@@ -219,8 +244,26 @@ apptainer exec --writable-tmpfs $GPU_ARGS --pwd /app \
     bash -e -c '
         sed -i "s/dashboard_process\.children()/()/g" /python/venv/lib/python3.13/site-packages/ray/_private/node.py
         sed -i "s/raise AccessDenied(pid) from err/pass/g" /python/venv/lib/python3.13/site-packages/ray/thirdparty_files/psutil/_pslinux.py
+
+        FED_CFG=$(/python/venv/bin/python3 -c "
+import tomllib, pathlib
+data = tomllib.loads(pathlib.Path(\"/app/pyproject.toml\").read_text())
+local = data.get(\"tool\", {}).get(\"flwr\", {}).get(\"federations\", {}).get(\"local\", {})
+opts = local.get(\"options\", local)
+backend = opts.get(\"backend\", {})
+cres = backend.get(\"client-resources\", opts.get(\"client-resources\", {}))
+iargs = backend.get(\"init-args\", opts.get(\"init-args\", {}))
+cfg = [f\"num-supernodes={opts.get('\''num-supernodes'\'', '"${TOTAL_EDGES}"')}\"]
+if \"num-cpus\" in cres: cfg.append(f\"client-resources-num-cpus={cres['\''num-cpus'\'']}\")
+if \"num-gpus\" in cres: cfg.append(f\"client-resources-num-gpus={cres['\''num-gpus'\'']}\")
+if \"num-cpus\" in iargs: cfg.append(f\"init-args-num-cpus={iargs['\''num-cpus'\'']}\")
+if \"num-gpus\" in iargs: cfg.append(f\"init-args-num-gpus={iargs['\''num-gpus'\'']}\")
+if \"verbose\" in opts: cfg.append(f\"verbose={str(opts['\''verbose'\'']).lower()}\")
+print(\" \".join(cfg))
+")
         echo "PATCH: Ray, psutil, and dynamic TPM UNIX socket routing applied successfully."
-        /python/venv/bin/flwr run /app local --stream --run-config "mode=\"sim\"" --federation-config "num-supernodes='"${TOTAL_EDGES}"'"
+        echo "CONFIG: Loaded federation config from pyproject.toml -> ${FED_CFG}"
+        /python/venv/bin/flwr run /app local --stream --run-config "mode=\"sim\"" --federation-config "${FED_CFG}"
     ' > "$LOG_DIR/system/run_cloud.log" 2>&1 &
 
 echo ""
