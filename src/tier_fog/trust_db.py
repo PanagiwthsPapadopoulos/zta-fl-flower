@@ -11,11 +11,12 @@ class NodeState(TypedDict):
 
 class TrustDatabase:
     """A stateful ledger and evaluation engine for tracking persistent risk levels and applying quarantine penalties."""
+
     def __init__(self, logger: logging.Logger):
         """Initializes the TrustDatabase with default scoring mechanics and quarantine parameters."""
         self.logger = logger
         self._db: Dict[str, NodeState] = {}
-        
+
         self.INIT_SCORE = 0.7
         self.MIN_THRESHOLD = 0.6
         self.REWARD_STEP = 0.02
@@ -37,10 +38,9 @@ class TrustDatabase:
     def process_attestation(self, node_id: str, display_name: str, is_valid: bool, round_num: int) -> None:
         """Processes a cryptographic attestation result, adjusting the node's score and quarantine boundaries."""
         self.logger.debug(f"[TrustDB-PROCESS] Ingesting Cryptographic Result for {display_name} | Valid Signature/Nonce: {is_valid}", extra={"round": round_num})
-        
+
         if node_id not in self._db:
             self.register_node(node_id, display_name, round_num)
-
         state = self._db[node_id]
         state["last_attestation_passed"] = is_valid
 
@@ -49,19 +49,24 @@ class TrustDatabase:
         else:
             if state["is_quarantined"]:
                 self._process_recovery(node_id, display_name, state, round_num)
-            
+
+    def apply_behavioral_penalty(self, node_id: str, display_name: str, round_num: int) -> None:
+        """Applies a multiplicative penalty when behavioral SHAP verification detects a poisoned update without altering hardware attestation status."""
+        if node_id not in self._db:
+            self.register_node(node_id, display_name, round_num)
+        self._apply_penalty(node_id, display_name, self._db[node_id], round_num)
+
     def apply_behavioral_reward(self, node_id: str, display_name: str, round_num: int) -> None:
         """Public endpoint to grant a trust reward based on behavioral analysis (e.g., SHAP stability)."""
         if node_id in self._db and not self._db[node_id]["is_quarantined"]:
             self._apply_reward(node_id, display_name, self._db[node_id], round_num)
 
     def _apply_penalty(self, node_id: str, display_name: str, state: NodeState, round_num: int) -> None:
-        """Applies a multiplicative penalty to a node's score following a failed security attestation."""
+        """Applies a multiplicative penalty to a node's score following a failed security attestation or behavioral check."""
         old_score = state["score"]
         state["score"] *= self.PENALTY_MULTIPLIER
-        state["recovery_streak"] = 0 
+        state["recovery_streak"] = 0
         self.logger.warning(f"TrustDB: Agent {display_name} penalized. Score dropped: {old_score:.3f} -> {state['score']:.3f}", extra={"round": round_num})
-
         if state["score"] < self.MIN_THRESHOLD and not state["is_quarantined"]:
             state["is_quarantined"] = True
             self.logger.error(f"TrustDB: Agent {display_name} fell below {self.MIN_THRESHOLD} threshold. QUARANTINE ENGAGED.", extra={"round": round_num})
@@ -76,7 +81,6 @@ class TrustDatabase:
         """Tracks consecutive recovery streaks for quarantined nodes, lifting restrictions upon completion."""
         state["recovery_streak"] += 1
         self.logger.info(f"TrustDB: Quarantined Agent {display_name} logged valid attestation. Recovery streak: {state['recovery_streak']}/{self.RECOVERY_REQUIREMENT}", extra={"round": round_num})
-
         if state["recovery_streak"] >= self.RECOVERY_REQUIREMENT:
             state["is_quarantined"] = False
             state["score"] = self.RECOVERY_RESET_SCORE

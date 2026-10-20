@@ -10,6 +10,7 @@ from src.shared.network.ipc import send_msg, recv_msg
 
 class FogBridgeClient:
     """A network client component for managing IPC socket flows and coordinating training rounds with the regional hub."""
+
     def __init__(self, logger: logging.Logger, log_prefix: str, ipc_port: int, socket_timeout: float = 600.0):
         """Initializes the Fog Bridge Client for IPC communication over the designated socket."""
         self.logger = logger
@@ -36,30 +37,47 @@ class FogBridgeClient:
                 self.logger.debug(f"{self.log_prefix} [IPC CLIENT] Non-fatal socket initialization error: {e}", extra={"round": current_round})
                 return None
 
-    def execute_round(self, current_round: int) -> Tuple[List[np.ndarray], int, Dict[str, Any]]:
-        """Executes a single federated learning round by dispatching a START signal and awaiting aggregated weights."""
+    def execute_round(self, current_round: int, parameters: Optional[List[np.ndarray]] = None) -> Tuple[List[np.ndarray], int, Dict[str, Any]]:
+        """Executes a single federated learning round by dispatching a START signal with Cloud parameters and awaiting aggregated weights."""
         try:
             sock = self._connect_with_retries(current_round)
             if not sock:
                 self.logger.debug(f"{self.log_prefix} [IPC CLIENT] Aborting round. Could not establish socket.", extra={"round": current_round})
                 return [], 0, {"status": "crashed"}
-            
+
             self.logger.info(f"{self.log_prefix} [IPC CLIENT] Connected! Sending START signal for round {current_round}.", extra={"round": current_round})
-            send_msg(sock, {"cmd": "START", "round": current_round})
-            
+            send_msg(sock, {
+                "cmd": "START",
+                "round": current_round,
+                "parameters": parameters if parameters is not None else []
+            })
+
             self.logger.debug(f"{self.log_prefix} [IPC CLIENT] START dispatched. Blocking until Fog Server returns aggregated weights...", extra={"round": current_round})
-            aggregated_ndarrays = recv_msg(sock)
-            
+            response = recv_msg(sock)
+
             self.logger.debug(f"{self.log_prefix} [IPC CLIENT] Data received. Closing IPC socket.", extra={"round": current_round})
             sock.close()
-            
+
+            if isinstance(response, dict):
+                aggregated_ndarrays = response.get("weights", [])
+                num_examples = int(response.get("num_examples", 1))
+                relayed_metrics = response.get("metrics", {})
+            else:
+                aggregated_ndarrays = response if response else []
+                num_examples = 1
+                relayed_metrics = {}
+
             if not aggregated_ndarrays:
                 self.logger.debug(f"{self.log_prefix} [IPC CLIENT] Empty weight array received. Returning neutralized status.", extra={"round": current_round})
                 return [], 0, {"status": "neutralized_attack", "node_name": self.log_prefix}
-                
+
             self.logger.debug(f"{self.log_prefix} [IPC CLIENT] Successfully received {len(aggregated_ndarrays)} tensor layers.", extra={"round": current_round})
-            return aggregated_ndarrays, 1, {"node_name": self.log_prefix}
-            
+            metrics_out = {"node_name": self.log_prefix}
+            if "total_regional_trust" in relayed_metrics:
+                metrics_out["total_regional_trust"] = float(relayed_metrics["total_regional_trust"])
+
+            return aggregated_ndarrays, max(1, num_examples), metrics_out
+
         except Exception as e:
             self.logger.debug(f"{self.log_prefix} [IPC CLIENT] Non-fatal runtime exception during execute_round: {e}", extra={"round": current_round})
             return [], 0, {"status": "crashed"}

@@ -143,11 +143,18 @@ def client_fn(context: Context):
     log_prefix = f"[EDGE {fog_num}_{edge_num}]"
     logger = setup_logger(log_prefix)
 
+    # Point at the correct hardware emulator sidecar
+    tcti_str = f"swtpm:host=tpm-{fog_num}-{edge_num},port=2321"
+    os.environ["TPM2TOOLS_TCTI"] = tcti_str
+    log_prefix = f"[EDGE {fog_num}_{edge_num}]"
+    logger = setup_logger(log_prefix)
+
     try:
         from src.shared.security.threat_profiler import assign_edge_roles
         role = assign_edge_roles(run_config, total_edges, global_index, random_seed, logger)
         
         train_config = {
+            "tpm_tcti": tcti_str,
             "role": role,
             "learning_rate": float(run_config["learning_rate"]),
             "quantization_bits": int(run_config["quantization_bits"]),

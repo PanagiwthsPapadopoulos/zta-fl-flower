@@ -97,6 +97,7 @@ class CloudAggregator(FedAvg):
         for i in range(1, self.num_fogs + 1):
             self.fog_client_loggers[i].info(f"[FOG {i} CLIENT] [IPC CLIENT] Connected! Sending START signal for round {server_round}.", extra={"round": server_round})
             self.fog_server_loggers[i].info(f"[FOG {i} SERVER] [IPC SERVER] START received for round {server_round}. Shouting to EDGE clients!", extra={"round": server_round})
+            self.admin_consoles[i].execute_scheduled_updates(server_round, i)
         
         import secrets
         shared_instructions = super().configure_fit(server_round, parameters, client_manager)
@@ -144,9 +145,7 @@ class CloudAggregator(FedAvg):
             if not cluster_results:
                 f_server_logger.warning(f"{f_server_prefix} No client returned updates! Releasing IPC bridge with empty payload.", extra={"round": server_round})
                 continue
-                
-            self.admin_consoles[fog_num].execute_scheduled_updates(server_round, fog_num)
-            
+                            
             token_sizes_bytes = {}
             node_ground_truths = {}
             for client_proxy, fit_res in cluster_results:
@@ -208,7 +207,7 @@ class CloudAggregator(FedAvg):
             
             if self.gatekeepers[fog_num].trust_db:
                 for tpm_id, display_identity in saboteurs:
-                    self.gatekeepers[fog_num].trust_db.process_attestation(node_id=tpm_id, display_name=display_identity, is_valid=False, round_num=server_round)
+                    self.gatekeepers[fog_num].trust_db.apply_behavioral_penalty(node_id=tpm_id, display_name=display_identity, round_num=server_round)
                 for tpm_id, display_identity in rewarded_nodes:
                     self.gatekeepers[fog_num].trust_db.apply_behavioral_reward(node_id=tpm_id, display_name=display_identity, round_num=server_round)
                     

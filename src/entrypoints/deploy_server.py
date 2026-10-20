@@ -107,7 +107,7 @@ def server_fn(context: Context) -> ServerAppComponents:
     test_split = float(run_config["test_split"])
     val_split = float(run_config["val_split"])
     
-    if tier == "fog":
+    if tier in ["fog", "cloud"]:
         try:
             simulate_global_leakage = run_config["simulate_global_leakage"]
             apply_smote = run_config["apply_smote"]  
@@ -115,21 +115,22 @@ def server_fn(context: Context) -> ServerAppComponents:
             dataset_returns = get_dataset(run_metadata["dataset"], dataset_path, num_classes, random_seed, simulate_global_leakage, apply_smote, "val", test_split, val_split)            
             X_full = dataset_returns[0]
             y_full = dataset_returns[1]
-
             # Keep a fraction of the dataset
             if run_metadata["dataset_fraction"] < 1.0:
-                # Have a hard floor of shap_val_samples, in order to perform the shap calculations accurately
                 subset_size = max(run_metadata["shap_val_samples"], int(len(X_full) * run_metadata["dataset_fraction"]))
                 X_full = X_full[:subset_size]
                 y_full = y_full[:subset_size]
-
-            # Build the evaluation subset
-            val_data = (X_full[:run_metadata["shap_val_samples"]], y_full[:run_metadata["shap_val_samples"]])
+            
+            # Build the evaluation subset by randomly sampling shap_val_samples per Fog node
+            g_val = torch.Generator().manual_seed(random_seed + fog_num)
+            perm = torch.randperm(len(X_full), generator=g_val)[:run_metadata["shap_val_samples"]]
+            val_data = (X_full[perm], y_full[perm])
             
             # Extract the feature count
             n_features = X_full.shape[1]
+            
         except FileNotFoundError:
-            logger.warning(f"Dataset not found at {dataset_path}. SHAP checks will be bypassed.")
+            logger.warning(f"Dataset not found at {dataset_path}. SHAP/rollback checks will be bypassed.")
     
     
     evaluator = GlobalEvaluator(

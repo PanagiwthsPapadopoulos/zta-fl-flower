@@ -73,7 +73,6 @@ class CNNLSTMClassifier(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 2:
             x = x.unsqueeze(-1)
-
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         
@@ -81,13 +80,11 @@ class CNNLSTMClassifier(nn.Module):
             x = self.pool(x)
             
         x = F.relu(self.bn3(self.conv3(x)))
-        self.cnn_dropout(x)
+        x = self.cnn_dropout(x)
         x = self.adaptive_pool(x)
         x = x.permute(0, 2, 1)
-
         lstm_out, _ = self.lstm(x)
         x = lstm_out[:, -1, :]
-
         x = self.fc_dropout(x)
         x = F.relu(self.fc1(x))
         x = self.fc_dropout(x)
@@ -102,7 +99,7 @@ class CNNLSTMClassifier(nn.Module):
         if x.size(-1) >= 2:
             x = self.pool(x)
         x = F.relu(self.bn3(self.conv3(x)))
-        self.cnn_dropout(x)
+        x = self.cnn_dropout(x)
         x = self.adaptive_pool(x)
         x = x.permute(0, 2, 1)
         lstm_out, _ = self.lstm(x)

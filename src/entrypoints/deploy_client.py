@@ -88,7 +88,7 @@ class Client(NumPyClient):
             if self.node_type == "fog_client":
                 from src.tier_edge.fog_bridge_client import FogBridgeClient
                 bridge = FogBridgeClient(self.logger, self.log_prefix, self.ipc_port, self.socket_timeout)
-                return bridge.execute_round(current_round)
+                return bridge.execute_round(current_round, parameters)
             elif self.node_type == "edge":
                 self.adversary_manager.current_round = current_round
                 # Track Local Execution Timestamps & Latency

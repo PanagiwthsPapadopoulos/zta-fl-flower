@@ -63,7 +63,7 @@ def poison_partition(
 
 @torch.no_grad()
 def compute_backdoor_asr(model: nn.Module, X_test: torch.Tensor, y_test: torch.Tensor, target_class: int = TARGET_CLASS, trigger_features: tuple = TRIGGER_FEATURES, trigger_value: float = TRIGGER_VALUE, device: str = "cpu", batch_size: int = 256) -> float:
-    model.train()
+    model.eval()
     model.to(device)
     X_eval = X_test[y_test != target_class].to(device)
     if X_eval.shape[0] == 0:

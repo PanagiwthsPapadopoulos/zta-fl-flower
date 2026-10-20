@@ -91,7 +91,9 @@ def server_fn(context: Context) -> ServerAppComponents:
             X_full = X_full[:subset_size]
             y_full = y_full[:subset_size]
             
-        val_data = (X_full[:run_metadata["shap_val_samples"]], y_full[:run_metadata["shap_val_samples"]])
+        g_val = torch.Generator().manual_seed(random_seed)
+        perm = torch.randperm(len(X_full), generator=g_val)[:run_metadata["shap_val_samples"]]
+        val_data = (X_full[perm], y_full[perm])
         n_features = X_full.shape[1]
     except FileNotFoundError:
         logger.warning(f"Dataset not found at {dataset_path}. SHAP checks will be bypassed.")

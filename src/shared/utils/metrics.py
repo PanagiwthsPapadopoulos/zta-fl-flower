@@ -165,47 +165,57 @@ def macro_f1(y_true: torch.Tensor, y_pred: torch.Tensor, n_classes: Optional[int
     return float(tmf.f1_score(y_pred, y_true, task="multiclass", num_classes=n_classes, average="macro"))
 
 
-def compute_shap_stability(model: nn.Module, ref_model: nn.Module, X_val: torch.Tensor, y_val: torch.Tensor, n_explain: int = 50, n_classes: int = 15, device: str = "cpu") -> float:
+def compute_shap_stability(
+    model: nn.Module,
+    ref_model: nn.Module,
+    X_val: torch.Tensor,
+    y_val: torch.Tensor,
+    n_explain: int = 50,
+    n_classes: int = 15,
+    device: str = "cpu",
+    precomputed_attrs_ref: Optional[torch.Tensor] = None
+) -> float:
     from captum.attr import GradientShap
-
     n_explain = min(n_explain, X_val.shape[0])
     X_sub, y_sub, background_set = X_val[:n_explain].to(device), y_val[:n_explain].to(device), X_val.to(device)
 
-    # Disable dropout to ensure deterministic calculations, though eval mode often covers this.
-    orig_probs_model, orig_probs_ref = disable_dropout(model), disable_dropout(ref_model)
-    
-    # Ensure models are in evaluation mode to freeze batch normalization layers
+    orig_probs_model = disable_dropout(model)
     model.eval()
-    ref_model.eval()
-    
-    # Force the tensors to the correct device
-    X_sub = X_sub.to(device)
-    background_set = background_set.to(device)
-    y_sub = y_sub.to(device)
+
+    orig_probs_ref = None
+    if precomputed_attrs_ref is None:
+        orig_probs_ref = disable_dropout(ref_model)
+        ref_model.eval()
 
     try:
         gs_model = GradientShap(model)
-        gs_ref = GradientShap(ref_model)
-
         if device == "cuda":
-        # cuDNN RNN backward passes fail in eval mode; disable only when CUDA is actually in use.
             with torch.backends.cudnn.flags(enabled=False):
                 attrs_model = gs_model.attribute(X_sub, baselines=background_set, target=y_sub)
-                attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
+                if precomputed_attrs_ref is None:
+                    gs_ref = GradientShap(ref_model)
+                    attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
+                else:
+                    attrs_ref = precomputed_attrs_ref.to(device)
         else:
             attrs_model = gs_model.attribute(X_sub, baselines=background_set, target=y_sub)
-            attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
+            if precomputed_attrs_ref is None:
+                gs_ref = GradientShap(ref_model)
+                attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
+            else:
+                attrs_ref = precomputed_attrs_ref.to(device)
     finally:
         restore_dropout(model, orig_probs_model)
-        restore_dropout(ref_model, orig_probs_ref)
+        if orig_probs_ref is not None:
+            restore_dropout(ref_model, orig_probs_ref)
 
-    # Flatten the multi-dimensional attributions per sample before calculating the L2 norm
     attrs_model_flat = attrs_model.view(attrs_model.size(0), -1)
     attrs_ref_flat = attrs_ref.view(attrs_ref.size(0), -1)
-    
-    # Custom implementation calculation along the flattened feature dimension
-    stability_scores = 1.0 - ((attrs_model_flat - attrs_ref_flat).norm(p=2, dim=1) / (attrs_ref_flat.norm(p=2, dim=1) + 1e-8))
-    
+
+    diff_norm = (attrs_model_flat - attrs_ref_flat).norm(p=2, dim=1)
+    ref_norm = attrs_ref_flat.norm(p=2, dim=1).clamp(min=1e-6)
+    stability_scores = torch.clamp(1.0 - (diff_norm / ref_norm), min=0.0, max=1.0)
+
     return float(stability_scores.mean().item())
 
 def roc_auc_multiclass(y_true: torch.Tensor, y_pred_probs: torch.Tensor, n_classes: int) -> float:
