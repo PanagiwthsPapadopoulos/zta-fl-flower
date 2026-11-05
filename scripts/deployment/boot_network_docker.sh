@@ -169,7 +169,7 @@ done
 export TOTAL_EDGES="$TOTAL_EDGES"
 
 echo "  Polling for $TOTAL_EDGES Edge container TPM boot sequences to complete..."
-# Execute the decoupled script (which now handles its own deterministic polling)
+# Collect provisioned identities using the collector polling loop.
 python3 "$PROJECT_ROOT/scripts/setup/collect_ledgers.py"
 
 # =================================================

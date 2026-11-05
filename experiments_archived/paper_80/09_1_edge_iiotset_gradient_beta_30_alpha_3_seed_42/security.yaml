@@ -1,0 +1,34 @@
+# Experiment: 09_1_edge_iiotset_gradient_beta_30_alpha_3_seed_42
+# Description: Gradient manipulation on 30% of clients with multiplier alpha=3.
+# Source: runs.md 2.3; paper Table III and VI.C; seed 42 of five independent runs.
+# Full protocol and assumptions: docs/batch-runs.md, Archived paper reproduction queue.
+# Paper V.C: 30% adversarial augmentation, including clean-data experiments.
+# Assumptions: p_flip=0.2 (Table III unspecified); PGD alpha=0.2
+# (repository default, not stated by paper). FGSM ignores alpha/n_iter.
+# Non-evasion runs use FGSM epsilon=0.05 as a defense assumption.
+# Trigger indices [-3,-2,-1], value 1.5, target 0 and explain count 10
+# are repository conventions, not article-specified settings.
+simulate_global_leakage: false
+shap_aware_base_attack: label_flip
+shap_aware_constrained: true
+shap_aware_tau: null
+shap_aware_max_backtracks: 10
+rollback_threshold: 0.8
+tpm_freshness_window: 60
+label_flip_ratio: 0.0
+grad_manip_ratio: 0.3
+backdoor_ratio: 0.0
+shap_aware_ratio: 0.0
+p_flip: 0.2
+gradient_alpha: 3.0
+backdoor_poison_fraction: 0.1
+backdoor_target_class: 0
+backdoor_trigger_features: '[-3, -2, -1]'
+backdoor_trigger_value: 1.5
+shap_val_samples: 100
+shap_explain_count: 10
+benign_adv_ratio: 0.3
+benign_eps: 0.05
+benign_alpha: 0.2
+benign_n_iter: 1
+robustness_eval_attack: fgsm

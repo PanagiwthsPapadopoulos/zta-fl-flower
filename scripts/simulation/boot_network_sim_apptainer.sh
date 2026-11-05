@@ -21,6 +21,7 @@ done
 # =========================================================
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+export APPTAINERENV_PYTHONPATH=/app
 export LOG_DIR="$PROJECT_ROOT/logs"
 export IMAGE_DIR="$PROJECT_ROOT/images"
 export LOCKS_DIR="$PROJECT_ROOT/runtime/locks"
@@ -44,11 +45,16 @@ mkdir -p "$PROJECT_ROOT/runtime/infra" \
 chmod 777 "$LOCKS_DIR"
 
 PIDS=()
+if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
+    : > "$PROJECT_ROOT/runtime/infra/batch_tpm_pids"
+fi
 
 cleanup() {
     echo -e "\n  Caught Shutdown Signal (Ctrl+C / Ctrl+Z)! Shutting down the Apptainer Simulation Engine..."
     for pid in "${PIDS[@]}"; do kill -9 "$pid" 2>/dev/null || true; done
-    pkill -9 -f 'flwr run|flwr-simulation|flower-superlink|flower-supernode|flower-superexec' 2>/dev/null || true
+    if [ "${ZTA_BATCH_MANAGED:-0}" != "1" ]; then
+        pkill -9 -f 'flwr run|flwr-simulation|flower-superlink|flower-supernode|flower-superexec' 2>/dev/null || true
+    fi
     rm -f "$PROJECT_ROOT/runtime/infra/.network_ready"
     echo "  Teardown complete. Network is offline."
     exit 0
@@ -134,6 +140,9 @@ for i in $(seq 1 "$NUM_FOGS"); do
                     --flags startup-clear \
                     > "$LOG_DIR/system/edge_${i}_${j}_swtpm.log" 2>&1 &
             PIDS+=($!)
+            if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
+                printf '%s\n' "${PIDS[${#PIDS[@]}-1]}" >> "$PROJECT_ROOT/runtime/infra/batch_tpm_pids"
+            fi
 
             while [ ! -S "$EDGE_TPM_DIR/swtpm.sock" ]; do
                 sleep 0.5

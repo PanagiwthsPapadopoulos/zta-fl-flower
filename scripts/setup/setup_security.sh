@@ -126,7 +126,7 @@ for (( i=1; i<=NUM_FOGS; i++ )); do
         -keyout "$FOG_DIR/nginx.key" -out "$FOG_DIR/nginx.csr" \
         -subj "/CN=fog-${i}-nginx" >> "$SEC_LOG" 2>&1
         
-# CRITICAL FIX: EOF must be completely flush left
+# The heredoc terminator must start at column zero.
 cat <<EOF > "$FOG_DIR/san.ext"
 basicConstraints = critical, CA:FALSE
 keyUsage = critical, nonRepudiation, digitalSignature, keyEncipherment

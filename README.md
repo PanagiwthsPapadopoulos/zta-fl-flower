@@ -1,271 +1,73 @@
 # Zero-Trust Agentic Federated Learning (Flower Implementation)
 
-A privacy-preserving, Byzantine-resilient federated learning framework for Industrial IoT (IIoT) intrusion detection. This repository is a custom implementation of the ZTA-FL(https://arxiv.org/abs/2512.23809) framework utilizing the [Flower (flwr)](https://flower.dev/) federated learning framework. 
+A Flower implementation of the [ZTA-FL framework](https://arxiv.org/abs/2512.23809) for Industrial IoT intrusion detection. It combines an Edge–Fog–Cloud training hierarchy, software TPM attestation, SHAP-based filtering and aggregation, and adversarial training.
 
-The system integrates device attestation concepts, SHAP-weighted robust aggregation, and on-device adversarial training into a three-tier edge–fog–cloud architecture.
+Read the [architecture parity report](docs/architecture-parity.md) for the relationship to the paper and authors' implementation, disclosed deviations and implementation limits.
 
-> **📖 Architecture Parity & Reproducibility Report**
->
-> Curious how this codebase maps to the theoretical experiments in the original ZTA-FL paper? 
-> Please read the **[ZTA-FL Architecture Parity Report](ZTA_FL_Architecture_Parity_Report.md)** before exploring the code. It explicitly details which components are mathematically faithful reproductions (e.g., MAD-based SHAP filtering, TrustDB state machines), which are intentional engineering trade-offs for bare-metal IIoT hardware, and the exact Zero-Trust NGINX mTLS routing used to secure this execution over public networks.
+## Guides
 
----
+| Guide | Purpose |
+| --- | --- |
+| [Architecture parity](docs/architecture-parity.md) | Component behavior, evidence and deviations from the reference work |
+| [Deployment](docs/deployment.md) | Run the distributed three-tier network with Docker or Apptainer |
+| [Simulation](docs/simulation.md) | Run the Ray-based simulation and external software TPMs |
+| [Overnight batches](docs/batch-runs.md) | Queue simulations with separate configs, deadlines and diagnostic backups |
+| [Dataset preparation](docs/dataset-preparation.md) | Download, clean and select full datasets; understand preprocessing choices |
+| [Testing](docs/testing.md) | Run component tests and interpret their evidence and limits |
+| [Preflight runs](docs/preflight.md) | Exact live test settings and acceptance criteria before long experiments |
+| [Monitoring and results](docs/monitoring-and-results.md) | Follow live progress, inspect logs and produce plots/security metrics |
 
-## Overview
+## Architecture and execution modes
 
-Traditional centralized intrusion detection systems cannot scale to IIoT deployments spanning thousands of heterogeneous edge devices across multiple industrial sites. Federated learning allows devices to collaboratively train a shared intrusion-detection model without sharing raw traffic data. However, standard FL is vulnerable to Byzantine poisoning, adversarial evasion, and Sybil attacks.
+Edges train local intrusion-detection models. Fogs verify attestation, evaluate SHAP stability and aggregate eligible updates. The Cloud combines Fog updates, validates candidate models and reports global metrics.
 
-This project implements a defense-in-depth architecture using Flower's SuperLink/SuperNode topology to mitigate these threats.
+| | Deployment | Simulation |
+| --- | --- | --- |
+| Runtime | Flower SuperLink, SuperNode and SuperExec services | Flower simulation with Ray actors |
+| Cloud/Fog execution | Separate services with inter-tier communication | Central engine with in-process Fog aggregation |
+| Edge execution | Separate client services | Ephemeral Ray actors |
+| Software TPMs | One emulator per Edge | External emulators used by the Edge actors |
+| Platforms | Docker Compose and Apptainer | Docker Compose and Apptainer |
 
----
+The project launchers mount local source, scripts and configuration into the existing runtime images. Code and documentation changes do not require rebuilding or publishing images. Stop active runs before changing source, then boot and dispatch again. Dependency or system-tool changes may still require updated images. The runtime-specific guides explain the mounts and startup steps.
 
-## System Architecture
+## Repository layout
 
-```mermaid
-flowchart TB
-    subgraph CLOUD["☁️  Cloud Layer (Flower SuperLink/Server)"]
-        direction TB
-        GA["Global Aggregator\nθ⁽ᵗ⁺¹⁾ = Σ wᵢ · θᵢ⁽ᵗ⁾"]
-    end
-
-    subgraph FOG["🌫️  Fog Layer (Intermediary Flower Nodes)"]
-        direction LR
-        FN1["Fog Node 1\n──────────\n• SHAP Stability Score\n• Byzantine Filter\n• Selected Aggregation (Krum, etc.)"]
-        FN2["Fog Node 2\n──────────\n• SHAP Stability Score\n• Byzantine Filter\n• Selected Aggregation"]
-    end
-
-    subgraph EDGE["🏭  Edge Layer (Flower Clients)"]
-        direction LR
-        E1["Agent 1\n─────────\nCNN-LSTM IDS\nAdv. Training"]
-        E2["Agent 2\n─────────\nCNN-LSTM IDS\nAdv. Training"]
-        E3["Agent 3\n─────────\nCNN-LSTM IDS\nAdv. Training"]
-        EN["Agent N\n─────────\nCNN-LSTM IDS\nAdv. Training"]
-    end
-
-    subgraph ATTACK["⚠️  Threat Model Configured via TOML"]
-        direction TB
-        BYZ["Byzantine Agents\n(Label Flip / Grad Scale)"]
-        ADV["Adversarial Inputs\n(FGSM / PGD)"]
-        SYB["Sybil / Replay\nAttackers"]
-    end
-
-    %% Data flow — upward
-    E1 -->|"Model update"| FN1
-    E2 -->|"Model update"| FN1
-    E3 -->|"Model update"| FN2
-    EN -->|"Model update"| FN2
-
-    FN1 -->|"Aggregated fog update"| GA
-    FN2 -->|"Aggregated fog update"| GA
-
-    %% Global model — downward
-    GA -->|"Global model θ⁽ᵗ⁺¹⁾"| FN1
-    GA -->|"Global model θ⁽ᵗ⁺¹⁾"| FN2
-    FN1 -->|"Updated model"| E1
-    FN1 -->|"Updated model"| E2
-    FN2 -->|"Updated model"| E3
-    FN2 -->|"Updated model"| EN
-
-    %% Threats
-    BYZ -. "Poisoned update" .-> FN1
-    ADV -. "Evasion attempt" .-> E2
-    SYB -. "Fake token" .-> FN2
-
-    %% Styles
-    classDef cloudStyle  fill:#1a6496,stroke:#0d3d5c,color:#fff
-    classDef fogStyle    fill:#2e7d32,stroke:#1b5e20,color:#fff
-    classDef edgeStyle   fill:#4a4a8a,stroke:#2c2c6a,color:#fff
-    classDef threatStyle fill:#b71c1c,stroke:#7f0000,color:#fff,stroke-dasharray:4 4
-
-    class GA cloudStyle
-    class FN1,FN2 fogStyle
-    class E1,E2,E3,EN edgeStyle
-    class BYZ,ADV,SYB threatStyle
-```
-
-> **Note on Network Security:** The diagram above details the Machine Learning and Federated Data Flow. For the exact **Zero-Trust NGINX mTLS routing architecture** used to secure this execution over public networks, please see the [Architecture Parity Report](ZTA_FL_Architecture_Parity_Report.md).
-
----
-
-## Project Structure
-
-```
+```text
 zta-fl-flower/
-├── config/                    # Configuration files for architecture parameter tuning
-├── data/                      # Raw datasets (cic_ids2017, edge_iiotset, unsw_nb15)
-├── logs/                      # Live execution logs for all network nodes
-├── results/                   # JSON outputs and global models
-├── runtime/                   # Local state and TPM ledgers (e.g., tpm_state/)
-├── src/                       # Core Node Runtime Code (Deployed to physical machines)
-│   ├── entrypoints/           # Flower application initializers (server.py, client.py)
-│   ├── shared/                # Shared logic utilized across multiple tiers
-│   │   ├── data/              # Data loading, SMOTE, and non-IID partitioning
-│   │   ├── models/            # ML architectures
-│   │   ├── network/           # IPC routing and custom 8-bit quantization mechanics
-│   │   ├── security/          # Threat injection (adversarial_math.py, backdoor_math.py)
-│   │   └── utils/             # Evaluation metrics, configs, and admin console
-│   ├── tier_cloud/            # Cloud Layer 
-│   ├── tier_edge/             # Edge Layer 
-│   └── tier_fog/              # Fog Layer
-├── scripts/                   # Helpful scripts for operation and setup
-├── tools/                     # Offline Local Utilities & Analytics 
-├── verification/              # Pre-Flight Checks & Static Analysis
-├── ZTA_FL_Architecture_Parity_Report.md # Architecture parity report
-└── pyproject.toml             # Flower configuration file 
-```
----
-
-## System Prerequisites
-
-This architecture heavily relies on **[DOCKER](https://www.docker.com/products/docker-desktop)** or [**APPTAINER**](https://apptainer.org/docs/admin/main/installation.html) and **OPENSSL**. Before running the python environment or orchestration scripts, you must install the following:
-
-**Ubuntu/Debian:**
-```bash
-sudo apt update
-sudo apt install openssl
+├── config/              # Network, training and security YAML
+├── data/                # Shipped snippets, downloaded full datasets and training artifacts
+├── docker/              # Image definitions and generated Compose configuration
+├── docs/                # Operational guides, parity report and dataset references
+├── images/              # Local Apptainer runtime images
+├── logs/                # Live node and system logs
+├── results/             # Metrics, checkpoints and batch archives
+├── runtime/             # TPM state, certificates, locks and run state
+├── scripts/
+│   ├── deployment/      # Distributed network boot and dispatch
+│   ├── simulation/      # Simulation boot and dispatch
+│   ├── setup/           # Dataset artifacts, topology and provisioning
+│   ├── ops/             # Downloads, batches, monitoring, plotting and evaluation
+│   └── tests/           # Automated tests and recorded evidence
+├── src/                 # Shared logic and Edge, Fog and Cloud implementations
+└── pyproject.toml       # Project dependencies and Flower application definition
 ```
 
-**macOS:**
-```bash
-brew install openssl
-```
+## Prerequisites and configuration
 
----
+Install Docker Compose or Apptainer, Python and OpenSSL before following the relevant run guide. The project pins Flower to `1.30.0`; the [deployment guide](docs/deployment.md) includes host setup and CLI checks. The [test guide](docs/testing.md) covers the additional ML dependencies needed for source tests.
 
-## Configuration & Customization
-
-The entire behavior of the distributed network, machine learning models, and threat environment is controlled centrally via the `configs/` directory. 
-
-Key sections you can modify:
-
-* **Topology (`configs/network.yaml`):** Scale the network by adjusting `num_fogs` and `uniform_edges_per_fog`. You can even dictate custom distributions using `custom_fog_topology`.
-* **Data Dynamics (`configs/training.yaml`):** Control non-IID data distribution using `n_classes_per` (label skew) and `power_law_a` (quantity skew). 
-* **Threat Model (`configs/security.yaml`):** Introduce malicious agents by adjusting the ratios under the `THREAT MODEL` section:
-  * `label_flip_ratio = 0.2` (Turns 20% of edges into label-flippers)
-  * `grad_manip_ratio = 0.1`
-  * `backdoor_ratio = 0.0`
-  * `shap_aware_ratio = 0.1`
-
-> **Note:** Performance varies depending on your hardware specifications and the total number of nodes in the network.
-
----
+Configuration lives in `config/`: `network.yaml` defines topology and transport, `training.yaml` selects data and learning settings, and `security.yaml` selects defenses and attack scenarios. These settings describe an experiment; they do not establish which architectural capabilities exist. Keep topology fixed within an overnight batch.
 
 ## Datasets
 
-Three publicly available network intrusion datasets are supported in the `data/` directory:
+| Dataset | Reference |
+| --- | --- |
+| Edge-IIoTset | [Data layout, label compatibility and citation](docs/datasets/edge-iiotset.md) |
+| CIC-IDS2017 | [Data layout, flow features and citation](docs/datasets/cic-ids2017.md) |
+| UNSW-NB15 | [Data layout, full-data source selection and citation](docs/datasets/unsw-nb15.md) |
 
-| Dataset | Description |
-|---------|-------------|
-| **Edge-IIoTset** | Traffic from IIoT devices (PLC, SCADA, Smart Sensors). |
-| **CIC-IDS2017** | Network flow records from a general enterprise network. |
-| **UNSW-NB15** | Network intrusion records from the UNSW cyber range. |
-
-Configure which dataset to use by updating the `dataset` and `dataset_path` variables in `configs/training.yaml`.
-
----
-
-## Duality of Runs
-
-To support both real-world systems engineering and high-scale academic benchmarking, this repository implements two distinct execution architectures:
-
-| **Feature**             | **Deployment Mode**                                                                                          | **Simulation Mode**                                                                                               |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| **Primary Goal**        | Real-world 3-tier distributed systems Proof-of-Concept                                                       | High-scale paper benchmark reproduction (up to 100+ clients)                                                      |
-| **Flower Engine**       | [Deployment Runtime](https://flower.ai/docs/framework/deploy.html) (`SuperLink` / `SuperNode` / `SuperExec`) | [Simulation Runtime](https://flower.ai/docs/framework/how-to-run-simulations.html) (Ray-backed `flwr-simulation`) |
-| **Supported Platforms** | **Docker Compose** & **Apptainer** (Rootless/HPC)                                                            | **Docker Compose** & **Apptainer** (Rootless/HPC)                                                                 |
-| **Cloud Tier (Tier 1)** | Dedicated `cloud-superlink` + `cloud-serverapp`                                                              | Runs natively inside the `sim-cloud` engine container                                                             |
-| **Fog Tier (Tier 2)**   | Dual-stack bridge per Fog (`supernode` + `clientapp` upward; `superlink` + `serverapp` downward)             | Mathematically virtualized in-memory within `sim-cloud`                                                           |
-| **Edge Tier (Tier 3)**  | Dedicated `edge-supernode` + `edge-clientapp` + local `swtpm` per Edge                                       | Ephemeral Ray Actors in `sim-cloud` + $N$ external `sim-tpm-*` containers                                         |
-| **Network Security**    | Full **NGINX mTLS/TLS** reverse-proxy mesh (or `--insecure` plain-text)                                      | Internal Docker bridge network (TCP `:2321` for TPM traffic)                                                      |
-
-### 1. [Deployment Mode](DEPLOYMENT.md)
-
-Designed as a systems Proof-of-Concept, **Deployment Mode** demonstrates how Flower's [Deployment Runtime](https://flower.ai/docs/framework/deploy.html) can be indirectly orchestrated into a true **3-tier hierarchical federated learning network** across isolated containers or processes:
-
-- **True Multi-Tier Isolation:** Every network component runs as an independent service. Each **Fog Node (Tier 2)** acts as a bidirectional relay consisting of four services: a downward-facing `fog-superlink` + `fog-serverapp` that aggregates and filters its assigned **Edge Nodes (Tier 3)**, paired with an upward-facing `fog-supernode` + `fog-clientapp` that reports the fog-aggregated update to the **Cloud (Tier 1)**.
-    
-- **End-to-End Zero-Trust mTLS & Hardware Attestation:** By default, `boot_network_docker.sh` and `boot_network_apptainer.sh` provision a complete Public Key Infrastructure (`setup_security.sh`) and spin up an **NGINX mTLS reverse proxy** (`setup_nginx.sh`) to authenticate and encrypt inter-tier gRPC traffic. Each Edge node boots with an isolated `swtpm` software TPM 2.0 instance (via TCP in Docker or UNIX sockets in Apptainer) whose factory state is collected into the TrustDB before training starts (`collect_ledgers.py`).
-    
-- **Multi-Federation FAB Dispatch:** Once the infrastructure is live, `deploy_code_docker.sh` (or `deploy_code_apptainer.sh`) compiles the dataset artifacts and ships Flower App Bundles (`flwr run`) independently to each `fog{i}` federation and finally to the `cloud` federation.
-    
-
-👉 **[Read the full Deployment Mode Guide (DEPLOYMENT.md)](DEPLOYMENT.md)** for setup instructions and restrictions.
-
-### 2. [Simulation Mode](SIMULATION.md)
-
-Designed to verify the large-scale experimental results of the original ZTA-FL paper without the CPU/RAM overhead of running hundreds of separate gRPC daemons, **Simulation Mode** uses a hybrid architecture combining Flower's [Simulation Runtime](https://flower.ai/docs/framework/how-to-run-simulations.html) with externalized hardware security containers:
-
-- **Centralized Simulation Engine (`sim-cloud`):** A single main container runs the entire federated learning training loop. `deploy_code_sim_docker.sh` dynamically rewrites `pyproject.toml` (`options.num-supernodes = TOTAL_EDGES`) and dispatches a single local simulation run.
-    
-- **Virtualized Fog Tier & Ephemeral Ray Edges:** Edge nodes (Tier 3) are scheduled dynamically as ephemeral Ray actors inside `sim-cloud`, while the Fog tier (Tier 2) is mathematically simulated in-process. This preserves 100% of the hierarchical SHAP stability scoring, Byzantine filtering, and TrustDB attestation logic while scaling smoothly up to 100+ clients.
-    
-- **Externalized TPM 2.0 Container Array (`sim-tpm-{i}-{j}`):** To keep cryptographic hardware attestation completely authentic during simulation, `generate_compose_sim.sh` spawns $N$ lightweight companion containers (where $N$ is the total number of edge nodes). Each `sim-tpm-{i}-{j}` container runs a dedicated `swtpm` TCP server on port `2321`, allowing ephemeral Ray actors inside `sim-cloud` to request real hardware-signed quotes over the Docker bridge network.
-    
-
-👉 **[Read the full Simulation Mode Guide (SIMULATION.md)](SIMULATION.md)** for instructions on booting the hybrid network and scaling client counts.
-
----
-
-## Monitoring & Logs
-The terminal displays the architecture map and then holds the process. The flow of the pipeline for the whole network written to the `logs/` directory:
-
-```bash
-# Watch the Cloud (Global convergence)
-tail -f logs/nodes/cloud/cloud_server.jsonl
-
-# Watch a specific Fog (Local aggregation & Security filtering)
-tail -f logs/nodes/fog_1/fog_1_server.jsonl
-
-# Watch an Edge Node (Local training & TPM Attestation)
-tail -f logs/nodes/edge_1_1/edge_1_1.jsonl
-```
-Otherwise, you can watch the pipeline update live using the following command:
-
-```python
-python3 verification/verify_pipeline.py --live
-```
-
-> **Note:** The `logs/` directory is **wiped clean at the start of every run.** Ensure you export any critical log instances before restarting the network.
-
----
-
-## Post-Run Analysis
-
-Once the network finishes its communication rounds, the results, including aggregated metrics and layer weights, are saved as JSON files in the `results/` directory.
-
-You can generate visualizations (like Accuracy vs. Communication Rounds, or SHAP stability distributions) using the provided script:
-
-* **Create and Activate the virtual environment & Install Requirements**
-```
-python3 -m venv .venv-zta
-source .venv-zta/bin/activate
-pip install -r requirements.txt
-```
-
-* **Auto-detect latest run:** 
-```
-python3 tools/plot_metrics.py
-```
-* **Plot specific run:** 
-```
-python3 tools/plot_metrics.py results/experiment_name
-```
-* **Custom panels:** 
-```
-python3 tools/plot_metrics.py --panels loss asr pgd
-```
-
-**Available Panels:** `accuracy_f1`, `loss`, `asr`, `pgd`, `fgsm`.
-
-Generated plots will be saved to `results/experiment_name/`.
-
-You can also calculate post-training metrics such as ASR, FAR, FRR, FPR and adversarial robustness with the following command:
-
-```
-python3 scripts/ops/evaluate_security.py 'test_run'
-```
-
----
+The shipped snippets remain under `data/<dataset>/raw/`. The downloader writes separately under `data/<dataset>/full_dataset/`; training artifacts remain under `data/<dataset>/artifacts/`. Follow [dataset preparation](docs/dataset-preparation.md) to select a full dataset and rebuild incompatible artifacts automatically.
 
 ## Acknowledgments and References
 

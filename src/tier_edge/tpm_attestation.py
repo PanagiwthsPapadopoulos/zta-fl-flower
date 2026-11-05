@@ -21,7 +21,6 @@ class TPMAttestation:
 
         if not self.insecure_mode and self.tcti:
             self.logger.info("TPMEngine: Hardware context detected. Initializing prover configuration.", extra={"round": self.current_round})
-            self._flush_tpm_memory()
             self._provision_ak()
         else:
             self.logger.info("TPMEngine: Hardware context absent or insecure mode enabled. Defaulting to verifier-only mode.", extra={"round": self.current_round})
@@ -52,11 +51,12 @@ class TPMAttestation:
         ak_pub = f"/tmp/ak_{session_id}.pub"
         ak_priv = f"/tmp/ak_{session_id}.priv"
         ak_ctx = f"/tmp/ak_{session_id}.ctx"
+        # Flower may recreate a ClientApp. Existing persistent keys need no
+        # provisioning or global transient/session flush on those recreations.
+        if subprocess.run(["tpm2_readpublic", "-c", "0x81010002"], capture_output=True, env=env).returncode == 0:
+            return
         try:
-            if subprocess.run(["tpm2_readpublic", "-c", "0x81010002"], capture_output=True, env=env).returncode == 0:
-                self.logger.info("TPMEngine: AK already exists in NVRAM.", extra={"round": self.current_round})
-                return
-
+            self._flush_tpm_memory()
             subprocess.run(["tpm2_createprimary", "-C", "o", "-c", primary_ctx], check=True, capture_output=True, env=env)
             subprocess.run(["tpm2_evictcontrol", "-C", "o", "-c", primary_ctx, "0x81000001"], check=True, capture_output=True, env=env)
             self._flush_tpm_memory()

@@ -6,6 +6,12 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_FLWR="/python/venv/bin/flwr"
 FEDERATION=local
+cd "$PROJECT_ROOT"
+BUILDER_ARGS=()
+if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
+    BUILDER_ARGS=(--name "zta-builder-${ZTA_BATCH_ATTEMPT}" --label "zta.batch_attempt=${ZTA_BATCH_ATTEMPT}")
+    printf 'preparing\n' > "$ZTA_BATCH_PHASE_FILE"
+fi
 
 # =========================================================
 # PRE-FLIGHT DEPENDENCY & HEALTH CHECK
@@ -34,6 +40,7 @@ echo "================================================="
 echo " 1. LOG ROTATION & TOPOLOGY ANALYSIS"
 echo "================================================="
 echo "🧹 Clearing stale Flower processes..."
+if [ "${ZTA_BATCH_MANAGED:-0}" != "1" ]; then
 docker exec sim-cloud pkill -9 -f 'flower-superlink|flower-supernode|flower-superexec|flwr-serverapp|flwr-clientapp|flwr run|flwr-simulation' 2>/dev/null || true
 
 echo "🧹 Clearing old node logs safely..."
@@ -41,6 +48,7 @@ mkdir -p "$PROJECT_ROOT/logs/nodes/cloud"
 mkdir -p "$PROJECT_ROOT/logs/system"
 find "$PROJECT_ROOT/logs/nodes" -type f -delete 2>/dev/null || true
 docker exec sim-cloud rm -rf /app/.flwr 2>/dev/null || true
+fi
 
 TOTAL_EDGES=$(docker ps --format '{{.Names}}' | grep -c '^sim-tpm-' || echo 0)
 
@@ -96,14 +104,16 @@ echo "│"
 echo "└── 📦 External Hardware Emulators (${TOTAL_EDGES} sim-tpm-* Containers)"
 
 # =========================================================
-# 2. ARTIFACT BUILDER (THE "BIG CRUNCH")
+# 2. DATASET ARTIFACT PREPARATION
 # =========================================================
 echo "================================================="
 echo " 🧱 COMPILING DATASET ARTIFACTS (IF MISSING)      "
 echo "================================================="
 # Spin up a temporary container. If it fails (!), abort everything.
 if ! docker run --rm \
+    ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     --entrypoint python3 \
+    --workdir /app --env PYTHONPATH=/app \
     -v "$PROJECT_ROOT/data:/app/data" \
     -v "$PROJECT_ROOT/config:/app/config:ro" \
     -v "$PROJECT_ROOT/src:/app/src:ro" \
@@ -124,20 +134,28 @@ echo "================================================="
 echo " 3. SIMULATION DEPLOYMENT DISPATCH"
 echo "================================================="
 
-TEMPLATE="$PROJECT_ROOT/pyproject.toml"
-echo "📝 Rewriting pyproject for sim-cloud (num-supernodes=${TOTAL_EDGES})"
-sed "s/^options.num-supernodes = .*/options.num-supernodes = ${TOTAL_EDGES}/" "$TEMPLATE" > /tmp/pyproject.cloud.toml
-docker cp /tmp/pyproject.cloud.toml sim-cloud:/app/pyproject.toml
+echo "📝 Using the mounted application manifest; simulation node count is passed explicitly to Flower."
 
 touch config/training.yaml
 
 echo "🚀 [cloud] sim: 1 Central Server + ${TOTAL_EDGES} Edge Actors"
 
-# Deployment runs natively in the background (-d), completely muting noisy Flower warnings
-docker exec -d -w /app \
+# Dispatch in the background, streaming Flower progress into the run log.
+EXEC_ARGS=(-d)
+if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
+    EXEC_ARGS=()
+    printf 'training\n' > "$ZTA_BATCH_PHASE_FILE"
+fi
+docker exec ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} -w /app \
   -e RUN_CFG="mode=\"sim\" tier=\"cloud\" min_clients=$TOTAL_EDGES" \
   -e N_SIM="$TOTAL_EDGES" \
-  sim-cloud bash -c "$BIN_FLWR run . $FEDERATION --run-config \"\$RUN_CFG\" > /app/logs/system/run_cloud.log 2>&1"
+  -e ZTA_BATCH_ATTEMPT="${ZTA_BATCH_ATTEMPT:-}" \
+  sim-cloud bash -e -c "
+    exec > /app/logs/system/run_cloud.log 2>&1
+    # Ray hides CUDA from actors unless they request GPU resources.
+    EDGE_GPUS=\$(python3 -c 'from src.shared.utils.hardware import get_device; print(1.0 if get_device(tier=\"edge\") == \"cuda\" else 0.0)')
+    $BIN_FLWR run . $FEDERATION --stream --federation-config \"num-supernodes=\$N_SIM client-resources-num-gpus=\$EDGE_GPUS\" --run-config \"\$RUN_CFG\"
+  "
 
 echo ""
 echo "✅ Global synchronization dispatched!"

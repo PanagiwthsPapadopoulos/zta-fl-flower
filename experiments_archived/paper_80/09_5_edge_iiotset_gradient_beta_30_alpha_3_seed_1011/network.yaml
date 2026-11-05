@@ -1,0 +1,20 @@
+# Experiment: 09_5_edge_iiotset_gradient_beta_30_alpha_3_seed_1011
+# Description: Gradient manipulation on 30% of clients with multiplier alpha=3.
+# Source: runs.md 2.3; paper Table III and VI.C; seed 1011 of five independent runs.
+# Full protocol and assumptions: docs/batch-runs.md, Archived paper reproduction queue.
+num_fogs: 10
+uniform_edges_per_fog: 10
+custom_fog_topology: '[]'
+broker_ip: 127.0.0.1
+socket_timeout: 3600.0
+round_timeout: 3600.0
+cloud_sa_port: 9001
+cloud_fl_port: 9002
+cloud_ctrl_port: 9003
+fog_sa_base: 9100
+fog_fl_base: 9200
+fog_ctrl_base: 9300
+fog_client_io_base: 9400
+fog_ipc_base: 9500
+edge_client_io_base: 10000
+quantization_bits: 8

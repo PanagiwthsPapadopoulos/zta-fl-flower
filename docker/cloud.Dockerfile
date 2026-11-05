@@ -24,7 +24,7 @@ RUN /python/venv/bin/pip install --no-cache-dir torch torchvision
 
 RUN /python/venv/bin/pip install --no-cache-dir torchmetrics captum
 
-# Strip simulation extras and install the rest of the app
+# Install the application and its declared dependencies
 RUN /python/venv/bin/pip install --no-cache-dir -U .
 
 COPY . /app/

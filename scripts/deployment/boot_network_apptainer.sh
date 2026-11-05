@@ -25,6 +25,7 @@ done
 
 export SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+export APPTAINERENV_PYTHONPATH=/app
 export LOG_DIR="$PROJECT_ROOT/logs"
 export CERTS_DIR="$PROJECT_ROOT/runtime/certs"
 export NGINX_CONF="$PROJECT_ROOT/runtime/infra/nginx.conf"
@@ -113,7 +114,7 @@ if [ "$INSECURE_MODE" = false ]; then
     echo "  ✓ Certs generated:"
     ls -la "$CERTS_DIR/cloud_server"
 
-    # --- NGINX config (unchanged; only consumes certs from disk) ---
+    # --- NGINX configuration using the generated certificates ---
     apptainer exec \
         --env OPENSSL_CONF= \
         --env PROJECT_ROOT=/app \
@@ -160,6 +161,7 @@ PIDS+=($!)
 # Cloud ServerApp
 apptainer exec $GPU_ARGS --pwd /app --env TZ="${HOST_TZ}" --env ZTA_INSECURE_MODE="${INSECURE_MODE}" \
     --env ZTA_TIER=cloud --env ZTA_GPU_AVAILABLE="${ZTA_GPU_AVAILABLE}" \
+    --bind "$PROJECT_ROOT/src:/app/src:ro,$PROJECT_ROOT/scripts:/app/scripts:ro" \
     --bind "$LOG_DIR/nodes/cloud:/app/logs,$PROJECT_ROOT/data:/app/data:ro,$PROJECT_ROOT/results:/app/results,$PROJECT_ROOT/config:/app/config:ro" \
     "$IMAGE_DIR/cloud_node.sif" \
     flower-superexec --insecure --plugin-type serverapp --appio-api-address "127.0.0.1:${CLOUD_SA}" \
@@ -194,6 +196,7 @@ for i in $(seq 1 "$NUM_FOGS"); do
     # Fog ClientApp
     apptainer exec $GPU_ARGS --pwd /app --env TZ="${HOST_TZ}" --env FOG_SERVER_HOST="127.0.0.1" --env IPC_PORT="${FOG_CLIENT_IO}" \
     --env ZTA_TIER=fog --env ZTA_GPU_AVAILABLE="${ZTA_GPU_AVAILABLE}" \
+    --bind "$PROJECT_ROOT/src:/app/src:ro,$PROJECT_ROOT/scripts:/app/scripts:ro" \
     --bind "$LOG_DIR/nodes/fog_${i}:/app/logs,$PROJECT_ROOT/data:/app/data:ro,$PROJECT_ROOT/config:/app/config:ro" \
     "$IMAGE_DIR/cloud_node.sif" \
     flower-superexec --insecure --plugin-type clientapp --appio-api-address "127.0.0.1:${FOG_CLIENT_IO}" \
@@ -211,6 +214,7 @@ PIDS+=($!)
     # Fog ServerApp
     apptainer exec $GPU_ARGS --pwd /app --env TZ="${HOST_TZ}" --env IPC_PORT="${FOG_SA}" --env ZTA_INSECURE_MODE="${INSECURE_MODE}" \
     --env ZTA_TIER=fog --env ZTA_GPU_AVAILABLE="${ZTA_GPU_AVAILABLE}" \
+    --bind "$PROJECT_ROOT/src:/app/src:ro,$PROJECT_ROOT/scripts:/app/scripts:ro" \
     --bind "$LOG_DIR/nodes/fog_${i}:/app/logs,$PROJECT_ROOT/data:/app/data:ro,$PROJECT_ROOT/config:/app/config:ro,$PROJECT_ROOT/runtime/tpm_state:/app/runtime/tpm_state:rw,$PROJECT_ROOT/results:/app/results" \
     "$IMAGE_DIR/cloud_node.sif" \
     flower-superexec --insecure --plugin-type serverapp --appio-api-address "127.0.0.1:${FOG_SA}" \
@@ -285,6 +289,7 @@ tpm.generate_attestation_token(nonce='FACTORY_BOOT_NONCE', software_label='[EDGE
         --env TZ="${HOST_TZ}" \
         --env TPM2TOOLS_TCTI="swtpm:path=${SOCK_PATH}" --env ZTA_INSECURE_MODE="${INSECURE_MODE}" \
         --env ZTA_TIER=edge --env ZTA_GPU_AVAILABLE="${ZTA_GPU_AVAILABLE}" \
+        --bind "$PROJECT_ROOT/src:/app/src:ro,$PROJECT_ROOT/scripts:/app/scripts:ro" \
         --bind "$LOG_DIR/nodes/edge_${i}_${j}:/app/logs,$PROJECT_ROOT/data:/app/data:ro,$PROJECT_ROOT/config:/app/config:ro,$PROJECT_ROOT/runtime/tpm_state/edge_${i}_${j}:/app/runtime/tpm_state/edge_${i}_${j}:rw,$LOCKS_DIR:/app/runtime/locks:rw" \
         "$IMAGE_DIR/edge_node.sif" \
         flower-superexec --insecure --plugin-type clientapp --appio-api-address "127.0.0.1:${EDGE_CLIENT_IO}" \

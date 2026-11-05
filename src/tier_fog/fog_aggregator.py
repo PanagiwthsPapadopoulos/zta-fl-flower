@@ -1,21 +1,13 @@
-import os
-import json
-import time
-import copy
 import logging
-import traceback
-from datetime import datetime
-from collections import OrderedDict
 from typing import Tuple, List, Optional, Any
-
 import torch
 from flwr.server.strategy import FedAvg
 from flwr.common import parameters_to_ndarrays, ndarrays_to_parameters, FitIns
 
-from src.shared.models.factory import get_model
-from src.shared.network.compression import compress_weights, decompress_weights
-from src.shared.utils.metrics import federated_averaging, krum_select, trimmed_mean_aggregate, flame_aggregate, fltrust_aggregate
-from src.tier_fog.shap_verifier import shap_weighted_aggregate
+from src.shared.models.factory import get_seeded_model
+from src.shared.network.model_payload import encode_model, load_model_arrays
+from src.tier_fog.round_processing import process_region
+from src.tier_fog.client_instructions import configure_edge_fit
 from src.tier_fog.gatekeeper import ZeroTrustGatekeeper
 from src.tier_fog.fog_bridge_server import FogBridgeServer
 
@@ -32,7 +24,6 @@ class FogAggregator(FedAvg):
         val_data: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         n_features: int = 40,
         num_classes: int = 15,
-        shap_threshold: float = 0.5,
         run_metadata: Optional[dict] = None,
         *args,
         **kwargs
@@ -51,26 +42,21 @@ class FogAggregator(FedAvg):
         self.val_data = val_data
         self.n_features = n_features
         self.num_classes = num_classes
-        self.shap_threshold = shap_threshold
-        self.global_model = get_model(self.model_architecture, self.n_features, self.num_classes)
-        self.cached_global_state = None
-        self.previous_val_acc = None
         self.run_metadata = run_metadata or {}
+        self.global_model = get_seeded_model(self.model_architecture, self.n_features, self.num_classes,
+                                            int(self.run_metadata.get("random_seed", 42)))
+        self.initial_parameters = encode_model(self.global_model, int(self.run_metadata.get("quantization_bits", 32)))
         self.active_nonces = {}
-
         self.experiment_name = self.run_metadata.get("experiment_name", "default_run")
         self.fog_state_history = {
             "metadata": {"fog_num": self.fog_num, "tier": self.tier},
             "rounds": {}
         }
-        self.gatekeeper = ZeroTrustGatekeeper(logger=self.logger, log_prefix=self.log_prefix, run_metadata=self.run_metadata)
-        from src.shared.utils.admin_console import AdminConsole
-        self.admin_console = AdminConsole(self.gatekeeper, self.logger)
+        self.gatekeeper = ZeroTrustGatekeeper(logger=self.logger, log_prefix=self.log_prefix, run_metadata=self.run_metadata, fog_num=self.fog_num)
         self.fog_bridge = FogBridgeServer(logger=self.logger, log_prefix=self.log_prefix, ipc_port=self.ipc_port, socket_timeout=self.socket_timeout)
 
     def configure_fit(self, server_round: int, parameters: list, client_manager: Any) -> list:
         """Synchronizes the training round and Cloud global model with the fog bridge, samples clients, and attaches nonces."""
-        import secrets
         bridged_round, cloud_ndarrays = self.fog_bridge.wait_for_start()
         if bridged_round > 0:
             self.current_bridged_round = bridged_round
@@ -78,340 +64,30 @@ class FogAggregator(FedAvg):
             self.logger.error(f"{self.log_prefix} [IPC SERVER] Failed to establish valid round sync.", extra={"round": server_round})
             raise ConnectionError("Fog Bridge failed to synchronize.")
 
-        # Synchronize the Fog's reference model and outbound parameters with the Cloud's global model
-        if cloud_ndarrays:
-            try:
-                quantization_bits = int(self.run_metadata.get("quantization_bits", 32))
-                decompressed = decompress_weights(cloud_ndarrays, quantization_bits)
-                state_dict = OrderedDict({k: torch.tensor(v) for k, v in zip(self.global_model.state_dict().keys(), decompressed)})
-                self.global_model.load_state_dict(state_dict, strict=True)
-                parameters = ndarrays_to_parameters(cloud_ndarrays)
-            except Exception as e:
-                self.logger.error(f"{self.log_prefix} [IPC SERVER] Failed to load Cloud parameters: {e}", extra={"round": self.current_bridged_round})
-
-        round_display = self.current_bridged_round
-        self.admin_console.execute_scheduled_updates(round_display, self.fog_num)
+        if not cloud_ndarrays:
+            raise ValueError("Cloud supplied an empty model")
+        load_model_arrays(self.global_model, cloud_ndarrays, int(self.run_metadata.get("quantization_bits", 32)))
+        parameters = ndarrays_to_parameters(cloud_ndarrays)
+        self.active_nonces = {}
 
         shared_instructions = super().configure_fit(server_round, parameters, client_manager)
-        new_client_instructions = []
-        for client_proxy, shared_fit_ins in shared_instructions:
-            client_config = shared_fit_ins.config.copy()
-            client_config["server_round"] = self.current_bridged_round
-            nonce = secrets.token_hex(16)
-            client_config["nonce"] = nonce
-            self.active_nonces[client_proxy.cid] = nonce
+        return configure_edge_fit(shared_instructions, [self.gatekeeper], self.current_bridged_round,
+                                  self.active_nonces, min(float(self.socket_timeout), 60.0))
 
-            isolated_fit_ins = FitIns(parameters=shared_fit_ins.parameters, config=client_config)
-            new_client_instructions.append((client_proxy, isolated_fit_ins))
+    def configure_evaluate(self, server_round, parameters, client_manager):
+        # Evaluation is centralized; do not redistribute weights to quarantined edges.
+        return []
 
-        return new_client_instructions
-
-    def aggregate_fit(self, server_round: int, results: list, failures: list) -> Tuple[Optional[list], dict]:
-        """Filters, evaluates, and aggregates client weight updates while maintaining a zero-trust node behavioral database."""
-        if not results:
-            self.logger.info(f"{self.log_prefix} No client returned updates! Releasing IPC bridge with empty payload.", extra={"round": server_round})
-            self._relay_ipc_fog_bridge(None, 0, {})
-            return None, {}
-
-        round_display = self.current_bridged_round
-        round_start_unix = time.time()
-
-        token_sizes_bytes = {}
-        node_ground_truths = {}
-        for client_proxy, fit_res in results:
-            raw_token = fit_res.metrics.get("tpm_token_json", "")
-            tpm_id = f"CID-{client_proxy.cid}"
-            if raw_token:
-                try:
-                    tpm_id = json.loads(raw_token).get("IDi", tpm_id)
-                except Exception:
-                    pass
-
-            token_sizes_bytes[tpm_id] = len(raw_token.encode('utf-8'))
-            node_ground_truths[tpm_id] = fit_res.metrics.get("role", "unknown")
-
-        all_tpm_ids = list(node_ground_truths.keys())
-
-        attestation_validation_start_unix = time.time()
-        trusted_results = self.gatekeeper.filter_node_updates(self.tier, round_display, results, self.active_nonces)
-        attestation_validation_end_unix = time.time()
-        latency_attestation_ms = (attestation_validation_end_unix - attestation_validation_start_unix) * 1000
-
-        attestation_accepted = [fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}") for client_proxy, fit_res in trusted_results]
-        attestation_rejected = [tid for tid in all_tpm_ids if tid not in attestation_accepted]
-
-        if not trusted_results:
-            self.logger.warning(f"{self.log_prefix} No trusted results to aggregate! Releasing IPC bridge with empty payload.", extra={"round": server_round})
-            self._relay_ipc_fog_bridge(None, 0, {})
-            return None, {}
-
-        node_training_latencies = {}
-        node_payload_sizes = {}
-        node_local_training_start_unix = {}
-        node_local_training_end_unix = {}
-        for client_proxy, fit_res in trusted_results:
-            tpm_id = fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}")
-            node_training_latencies[tpm_id] = float(fit_res.metrics.get("latency_adv_training_sec", 0.0))
-            node_payload_sizes[tpm_id] = float(fit_res.metrics.get("payload_size_mb", 0.0))
-            if "local_adversarial_training_start_unix" in fit_res.metrics:
-                node_local_training_start_unix[tpm_id] = fit_res.metrics.get("local_adversarial_training_start_unix")
-            if "local_adversarial_training_end_unix" in fit_res.metrics:
-                node_local_training_end_unix[tpm_id] = fit_res.metrics.get("local_adversarial_training_end_unix")
-
-        self.logger.info(f"{self.log_prefix} Executing SHAP aggregation...", extra={"round": round_display})
-        local_models, sizes, trust_weights, tpm_ids, display_names = self._extract_models_from_results(trusted_results)
-        total_examples = sum(sizes)
-
-        try:
-            shap_calculation_start_unix = time.time()
-            aggregated_model, saboteurs, rewarded_nodes, raw_shap_scores = self._apply_aggregation_strategy(
-                local_models, sizes, trust_weights, tpm_ids, display_names
-            )
-            shap_calculation_end_unix = time.time()
-            latency_shap_computation_sec = shap_calculation_end_unix - shap_calculation_start_unix
-
-            if self.gatekeeper.trust_db:
-                for tpm_id, display_identity in saboteurs:
-                    self.logger.error(f"{self.log_prefix} SHAP SABOTAGE DETECTED: {display_identity} submitted statistically toxic weights. Retroactively slashing TrustDB score!", extra={"round": round_display})
-                    self.gatekeeper.trust_db.apply_behavioral_penalty(node_id=tpm_id, display_name=display_identity, round_num=round_display)
-
-                for tpm_id, display_identity in rewarded_nodes:
-                    self.logger.info(f"{self.log_prefix} SHAP EXCELLENCE: {display_identity} strictly exceeded median stability. Granting behavioral trust reward!", extra={"round": round_display})
-                    self.gatekeeper.trust_db.apply_behavioral_reward(node_id=tpm_id, display_name=display_identity, round_num=round_display)
-
-            aggregation_start_unix = time.time()
-            self._evaluate_rollback_sanity_check(aggregated_model, round_display)
-            self.global_model.load_state_dict(aggregated_model.state_dict())
-
-            quantization_bits = int(self.run_metadata["quantization_bits"])
-            raw_ndarrays = [val.cpu().numpy() for _, val in aggregated_model.state_dict().items()]
-            compressed_ndarrays = compress_weights(raw_ndarrays, quantization_bits)
-            aggregated_parameters = ndarrays_to_parameters(compressed_ndarrays)
-            aggregation_end_unix = time.time()
-
-            aggregated_metrics = {}
-            if hasattr(self, 'current_regional_trust'):
-                aggregated_metrics["total_regional_trust"] = self.current_regional_trust
-            aggregated_metrics["saboteurs"] = saboteurs
-            aggregated_metrics["rewarded_nodes"] = rewarded_nodes
-            aggregated_metrics["raw_shap_scores"] = raw_shap_scores
-
-            round_end_unix = time.time()
-
-            self._dump_fog_state(
-                round_num=round_display,
-                attestation_accepted=attestation_accepted,
-                attestation_rejected=attestation_rejected,
-                raw_shap_scores=raw_shap_scores,
-                latency_attestation_ms=latency_attestation_ms,
-                node_training_latencies=node_training_latencies,
-                latency_shap_computation_sec=latency_shap_computation_sec,
-                node_payload_sizes=node_payload_sizes,
-                token_sizes_bytes=token_sizes_bytes,
-                node_ground_truths=node_ground_truths,
-                saboteurs=saboteurs,
-                rewarded_nodes=rewarded_nodes,
-                round_start_unix=round_start_unix,
-                round_end_unix=round_end_unix,
-                attestation_validation_start_unix=attestation_validation_start_unix,
-                attestation_validation_end_unix=attestation_validation_end_unix,
-                shap_calculation_start_unix=shap_calculation_start_unix,
-                shap_calculation_end_unix=shap_calculation_end_unix,
-                aggregation_start_unix=aggregation_start_unix,
-                aggregation_end_unix=aggregation_end_unix,
-                node_local_training_start_unix=node_local_training_start_unix,
-                node_local_training_end_unix=node_local_training_end_unix
-            )
-        except Exception as e:
-            self.logger.error(f"{self.log_prefix} Math failed: {e}\n{traceback.format_exc()}", extra={"round": round_display})
-            aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, trusted_results, failures)
-
-        self._relay_ipc_fog_bridge(aggregated_parameters, total_examples, aggregated_metrics)
-        return aggregated_parameters, aggregated_metrics
-
-    def _dump_fog_state(
-        self,
-        round_num: int,
-        attestation_accepted: list,
-        attestation_rejected: list,
-        raw_shap_scores: dict,
-        latency_attestation_ms: float,
-        node_training_latencies: dict,
-        latency_shap_computation_sec: float,
-        node_payload_sizes: dict,
-        token_sizes_bytes: dict,
-        node_ground_truths: dict,
-        saboteurs: list,
-        rewarded_nodes: list,
-        round_start_unix: float,
-        round_end_unix: float,
-        attestation_validation_start_unix: float,
-        attestation_validation_end_unix: float,
-        shap_calculation_start_unix: float,
-        shap_calculation_end_unix: float,
-        aggregation_start_unix: float,
-        aggregation_end_unix: float,
-        node_local_training_start_unix: dict,
-        node_local_training_end_unix: dict
-    ) -> None:
-        """Packages the raw TrustDB ledger, SHAP scores, and system telemetry into 3 isolated JSON artifacts."""
-        trust_db_snapshot = {}
-        if self.gatekeeper.trust_db:
-            for node_id, state in self.gatekeeper.trust_db._db.items():
-                trust_db_snapshot[node_id] = {
-                    "score": state["score"],
-                    "is_quarantined": state["is_quarantined"],
-                    "recovery_streak": state["recovery_streak"],
-                    "last_attestation_passed": state.get("last_attestation_passed", False)
-                }
-
-        self.fog_state_history["rounds"][round_num] = {
-            "attestation_accepted": attestation_accepted,
-            "attestation_rejected": attestation_rejected,
-            "trust_db": trust_db_snapshot,
-            "raw_shap_scores": raw_shap_scores,
-            "latency_attestation_ms": latency_attestation_ms,
-            "node_training_latencies": node_training_latencies,
-            "latency_shap_computation_sec": latency_shap_computation_sec,
-            "node_payload_sizes": node_payload_sizes,
-            "token_sizes_bytes": token_sizes_bytes,
-            "node_ground_truths": node_ground_truths,
-            "saboteurs": saboteurs,
-            "rewarded_nodes": rewarded_nodes,
-            "round_start_unix": round_start_unix,
-            "round_end_unix": round_end_unix,
-            "attestation_validation_start_unix": attestation_validation_start_unix,
-            "attestation_validation_end_unix": attestation_validation_end_unix,
-            "shap_calculation_start_unix": shap_calculation_start_unix,
-            "shap_calculation_end_unix": shap_calculation_end_unix,
-            "aggregation_start_unix": aggregation_start_unix,
-            "aggregation_end_unix": aggregation_end_unix,
-            "node_local_training_start_unix": node_local_training_start_unix,
-            "node_local_training_end_unix": node_local_training_end_unix,
-            "timestamp": datetime.now().isoformat()
-        }
-
-        trust_history = {"metadata": self.fog_state_history.get("metadata", {}), "rounds": {}}
-        shap_history = {"metadata": self.fog_state_history.get("metadata", {}), "rounds": {}}
-        perf_history = {"metadata": self.fog_state_history.get("metadata", {}), "rounds": {}}
-
-        for r, data in self.fog_state_history["rounds"].items():
-            trust_history["rounds"][r] = {
-                "attestation_accepted": data["attestation_accepted"],
-                "attestation_rejected": data["attestation_rejected"],
-                "trust_db": data["trust_db"],
-                "node_ground_truths": data["node_ground_truths"],
-                "timestamp": data["timestamp"]
-            }
-            shap_history["rounds"][r] = {
-                "raw_shap_scores": data["raw_shap_scores"],
-                "saboteurs": data["saboteurs"],
-                "rewarded_nodes": data["rewarded_nodes"],
-                "timestamp": data["timestamp"]
-            }
-            perf_history["rounds"][r] = {
-                "latency_attestation_ms": data["latency_attestation_ms"],
-                "latency_shap_computation_sec": data["latency_shap_computation_sec"],
-                "node_training_latencies": data.get("node_training_latencies", {}),
-                "node_payload_sizes": data.get("node_payload_sizes", {}),
-                "token_sizes_bytes": data.get("token_sizes_bytes", {}),
-                "round_start_unix": data.get("round_start_unix"),
-                "round_end_unix": data.get("round_end_unix"),
-                "attestation_validation_start_unix": data.get("attestation_validation_start_unix"),
-                "attestation_validation_end_unix": data.get("attestation_validation_end_unix"),
-                "shap_calculation_start_unix": data.get("shap_calculation_start_unix"),
-                "shap_calculation_end_unix": data.get("shap_calculation_end_unix"),
-                "aggregation_start_unix": data.get("aggregation_start_unix"),
-                "aggregation_end_unix": data.get("aggregation_end_unix"),
-                "node_local_training_start_unix": data.get("node_local_training_start_unix", {}),
-                "node_local_training_end_unix": data.get("node_local_training_end_unix", {}),
-                "timestamp": data["timestamp"]
-            }
-
-        trust_dir = f"results/{self.experiment_name}/trustdb"
-        shap_dir = f"results/{self.experiment_name}/shap_scores"
-        perf_dir = f"results/{self.experiment_name}/performance_metrics"
-
-        os.makedirs(trust_dir, exist_ok=True)
-        os.makedirs(shap_dir, exist_ok=True)
-        os.makedirs(perf_dir, exist_ok=True)
-
-        with open(os.path.join(trust_dir, f"fog_{self.fog_num}_state.json"), "w") as f:
-            json.dump(trust_history, f, indent=4)
-
-        with open(os.path.join(shap_dir, f"fog_{self.fog_num}_state.json"), "w") as f:
-            json.dump(shap_history, f, indent=4)
-
-        with open(os.path.join(perf_dir, f"fog_{self.fog_num}_state.json"), "w") as f:
-            json.dump(perf_history, f, indent=4)
-
-        self.logger.debug(f"{self.log_prefix} Saved 3-pillar Fog state artifacts for round {round_num}", extra={"round": round_num})
-
-    def _extract_models_from_results(self, trusted_results: list) -> Tuple[List[torch.nn.Module], List[int], List[float], List[str], List[str]]:
-        """Unpacks, decompresses, and translates client network payloads into native PyTorch models."""
-        local_models, sizes, trust_weights, tpm_ids, display_names = [], [], [], [], []
-        quantization_bits = int(self.run_metadata["quantization_bits"])
-        for client_proxy, fit_res in trusted_results:
-            tpm_id = fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}")
-            display_identity = fit_res.metrics.get("display_identity", f"{tpm_id} (Unknown)")
-
-            model = get_model(self.model_architecture, self.n_features, self.num_classes)
-            raw_params = parameters_to_ndarrays(fit_res.parameters)
-            decompressed_params = decompress_weights(raw_params, quantization_bits)
-            state_dict = OrderedDict({k: torch.tensor(v) for k, v in zip(model.state_dict().keys(), decompressed_params)})
-            model.load_state_dict(state_dict, strict=True)
-
-            local_models.append(model)
-            sizes.append(fit_res.num_examples)
-            trust_weights.append(float(fit_res.metrics.get("total_regional_trust", 1.0)))
-            tpm_ids.append(tpm_id)
-            display_names.append(display_identity)
-        return local_models, sizes, trust_weights, tpm_ids, display_names
-
-    def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float], tpm_ids: List[str], display_names: List[str]) -> Tuple[torch.nn.Module, List[Tuple[str, str]], List[Tuple[str, str]], dict]:
-        """Evaluates local models using SHAP validation data and delegates aggregation."""
-        if self.val_data is None:
-            raise ValueError("ZTA strategy requires val_data for SHAP verification, but it was None.")
-        X_val, y_val = self.val_data
-        agg_model, regional_trust, passed_flags, reward_flags, raw_scores_list = shap_weighted_aggregate(
-            local_models=local_models, ref_model=self.global_model,
-            X_val=X_val, y_val=y_val, sizes=sizes, n_classes=self.num_classes, n_explain=self.shap_explain_count
+    def aggregate_fit(self, server_round, results, failures):
+        parameters, samples, metrics = process_region(
+            gatekeeper=self.gatekeeper, reference=self.global_model, val_data=self.val_data,
+            results=results, nonces=self.active_nonces, expected_clients=self.active_nonces,
+            metadata=self.run_metadata, fog_num=self.fog_num, round_num=self.current_bridged_round,
+            history=self.fog_state_history, n_explain=self.shap_explain_count,
+            num_classes=self.num_classes,
         )
-        self.current_regional_trust = regional_trust
-        raw_shap_scores = {tpm_ids[i]: float(raw_scores_list[i]) for i in range(len(tpm_ids))}
-        saboteurs = [(tpm_ids[i], display_names[i]) for i, passed in enumerate(passed_flags) if not passed]
-        rewarded_nodes = [(tpm_ids[i], display_names[i]) for i, rewarded in enumerate(reward_flags) if rewarded]
-
-        return agg_model, saboteurs, rewarded_nodes, raw_shap_scores
-
-    def _evaluate_rollback_sanity_check(self, aggregated_model: torch.nn.Module, round_display: int) -> None:
-        """Evaluates the aggregated model and rolls back to a previous state if performance collapses."""
-        if self.val_data is not None:
-            X_val, y_val = self.val_data
-            aggregated_model.eval()
-
-            with torch.no_grad():
-                device = next(aggregated_model.parameters()).device
-                X_val_gpu = X_val.to(device)
-                y_val_gpu = y_val.to(device)
-                preds = aggregated_model(X_val_gpu).argmax(dim=-1)
-                val_acc = (preds == y_val_gpu).float().mean().item()
-
-            if self.previous_val_acc is None:
-                self.logger.info(f"{self.log_prefix} Initializing baseline state.", extra={"round": round_display})
-                self.cached_global_state = copy.deepcopy(aggregated_model.state_dict())
-                self.previous_val_acc = val_acc
-                return
-
-            rollback_fraction = float(self.run_metadata["rollback_threshold"])
-            dynamic_threshold = self.previous_val_acc * rollback_fraction
-            if val_acc < dynamic_threshold and self.cached_global_state is not None:
-                self.logger.info(f"{self.log_prefix} Checking accuracy for rollback with fraction={rollback_fraction}. Accuracy calculated: {val_acc:.4f} and dynamic threshold: {dynamic_threshold:.4f}. Rolling back to previous round weights!", extra={"round": round_display})
-                aggregated_model.load_state_dict(self.cached_global_state)
-            else:
-                self.logger.info(f"{self.log_prefix} Checking accuracy for rollback with fraction={rollback_fraction}. Accuracy calculated: {val_acc:.4f} and dynamic threshold: {dynamic_threshold:.4f}. Aggregation passed sanity check. Caching state.", extra={"round": round_display})
-                self.cached_global_state = copy.deepcopy(aggregated_model.state_dict())
-                self.previous_val_acc = val_acc
+        self._relay_ipc_fog_bridge(parameters, samples, metrics)
+        return parameters, metrics
 
     def _relay_ipc_fog_bridge(self, aggregated_parameters: Optional[list], num_examples: int = 1, metrics: Optional[dict] = None) -> None:
         """Translates and relays the aggregated model weights and regional trust metrics to the external IPC bridge."""

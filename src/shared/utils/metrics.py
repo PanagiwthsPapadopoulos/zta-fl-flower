@@ -1,21 +1,30 @@
 from __future__ import annotations
 import copy
+from contextlib import nullcontext
 import math
 from typing import Optional, List
 import numpy as np
 import torch
+import threading
 import torch.nn as nn
 from src.shared.utils.hardware import get_device
 
+_SHAP_RNG_LOCK = threading.Lock()
 
 def federated_averaging(models: List[nn.Module], weights: Optional[List[float]] = None) -> nn.Module:
     if len(models) == 0:
         raise ValueError("At least one model is required for aggregation.")
     if weights is None:
         weights = [1.0 / len(models)] * len(models)
-    if abs(sum(weights) - 1.0) > 1e-5:
-        total = sum(weights)
-        weights = [w / total for w in weights]
+    if len(weights) != len(models) or any(not math.isfinite(w) or w < 0 for w in weights):
+        raise ValueError("Aggregation weights must be finite, nonnegative, and match models")
+    total = math.fsum(weights)
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError("Aggregation requires positive total weight")
+    weights = [w / total for w in weights]
+    from src.shared.network.model_payload import validate_model
+    for model in models:
+        validate_model(model)
 
     global_model = copy.deepcopy(models[0])
     with torch.no_grad():
@@ -24,6 +33,7 @@ def federated_averaging(models: List[nn.Module], weights: Optional[List[float]] 
             for model, w in zip(models, weights):
                 aggregated += w * model.state_dict()[key].float()
             global_model.state_dict()[key].copy_(aggregated)
+    validate_model(global_model)
     return global_model
 
 
@@ -148,6 +158,7 @@ def accuracy(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
 
 
 def macro_f1(y_true: torch.Tensor, y_pred: torch.Tensor, n_classes: Optional[int] = None) -> float:
+    """Author convention: omit classes absent from both targets and predictions."""
     import torchmetrics.functional as tmf
     
     if y_pred.dim() > 1:
@@ -158,11 +169,54 @@ def macro_f1(y_true: torch.Tensor, y_pred: torch.Tensor, n_classes: Optional[int
     y_true = y_true.long().flatten()
     y_pred = y_pred.long().flatten()
     
+    if y_true.numel() == 0 and y_pred.numel() == 0:
+        return 0.0
     if n_classes is None:
         n_classes = max(y_true.max(), y_pred.max()).item() + 1
     n_classes = max(2, n_classes)
     
-    return float(tmf.f1_score(y_pred, y_true, task="multiclass", num_classes=n_classes, average="macro"))
+    # Keep prediction-only classes: their false positives must count in macro-F1.
+    per_class = tmf.f1_score(y_pred, y_true, task="multiclass", num_classes=n_classes,
+                            average=None)
+    support = (torch.bincount(y_true, minlength=n_classes)
+               + torch.bincount(y_pred, minlength=n_classes)) > 0
+    return float(per_class[support].mean())
+
+
+def compute_shap_attributions(model, X_val, y_val, n_explain=50, device="cpu", seed=42):
+    """Serialize Captum, replay both RNG streams, and restore caller RNG/model state."""
+    from captum.attr import GradientShap
+    n_explain = min(n_explain, X_val.shape[0])
+    if n_explain < 1:
+        raise ValueError("SHAP requires nonempty validation inputs")
+    X_sub = X_val[:n_explain].to(device)
+    y_sub = y_val[:n_explain].to(device)
+    background = X_val.to(device)
+    devices = [X_sub.device.index] if X_sub.is_cuda else []
+    with _SHAP_RNG_LOCK:
+        numpy_state = np.random.get_state()
+        mps_state = torch.mps.get_rng_state() if X_sub.device.type == "mps" else None
+        training = model.training
+        try:
+            model.eval()
+            with torch.random.fork_rng(devices=devices):
+                torch.random.default_generator.manual_seed(seed)
+                if X_sub.is_cuda:
+                    torch.cuda.default_generators[X_sub.device.index].manual_seed(seed)
+                if mps_state is not None:
+                    torch.mps.manual_seed(seed)
+                np.random.seed(seed)
+                guard = torch.backends.cudnn.flags(enabled=False) if X_sub.is_cuda else nullcontext()
+                with guard:
+                    attrs = GradientShap(model).attribute(X_sub, baselines=background, target=y_sub).detach()
+            if not torch.isfinite(attrs).all():
+                raise ValueError("Nonfinite SHAP attributions")
+            return attrs
+        finally:
+            np.random.set_state(numpy_state)
+            if mps_state is not None:
+                torch.mps.set_rng_state(mps_state)
+            model.train(training)
 
 
 def compute_shap_stability(
@@ -173,54 +227,33 @@ def compute_shap_stability(
     n_explain: int = 50,
     n_classes: int = 15,
     device: str = "cpu",
-    precomputed_attrs_ref: Optional[torch.Tensor] = None
+    precomputed_attrs_ref: Optional[torch.Tensor] = None,
+    seed: int = 42,
 ) -> float:
-    from captum.attr import GradientShap
-    n_explain = min(n_explain, X_val.shape[0])
-    X_sub, y_sub, background_set = X_val[:n_explain].to(device), y_val[:n_explain].to(device), X_val.to(device)
+    attrs_model = compute_shap_attributions(model, X_val, y_val, n_explain, device, seed)
+    attrs_ref = (compute_shap_attributions(ref_model, X_val, y_val, n_explain, device, seed)
+                 if precomputed_attrs_ref is None else precomputed_attrs_ref.to(device))
+    if attrs_model.shape != attrs_ref.shape or not torch.isfinite(attrs_ref).all():
+        raise ValueError("Invalid reference SHAP attributions")
+    # Paper V-B compares one feature-importance vector per model. Mean absolute
+    # attribution over the matched examples defines that vector; the paper does
+    # not specify this reduction. Preserve negative scores for the population test.
+    phi_model = attrs_model.reshape(attrs_model.size(0), -1).abs().mean(dim=0)
+    phi_ref = attrs_ref.reshape(attrs_ref.size(0), -1).abs().mean(dim=0)
+    ratio = (phi_model - phi_ref).norm(p=2) / (phi_ref.norm(p=2) + 1e-6)
+    if not torch.isfinite(ratio):
+        raise ValueError("Nonfinite SHAP stability ratio")
+    return float((1.0 - ratio).item())
 
-    orig_probs_model = disable_dropout(model)
-    model.eval()
 
-    orig_probs_ref = None
-    if precomputed_attrs_ref is None:
-        orig_probs_ref = disable_dropout(ref_model)
-        ref_model.eval()
-
-    try:
-        gs_model = GradientShap(model)
-        if device == "cuda":
-            with torch.backends.cudnn.flags(enabled=False):
-                attrs_model = gs_model.attribute(X_sub, baselines=background_set, target=y_sub)
-                if precomputed_attrs_ref is None:
-                    gs_ref = GradientShap(ref_model)
-                    attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
-                else:
-                    attrs_ref = precomputed_attrs_ref.to(device)
-        else:
-            attrs_model = gs_model.attribute(X_sub, baselines=background_set, target=y_sub)
-            if precomputed_attrs_ref is None:
-                gs_ref = GradientShap(ref_model)
-                attrs_ref = gs_ref.attribute(X_sub, baselines=background_set, target=y_sub)
-            else:
-                attrs_ref = precomputed_attrs_ref.to(device)
-    finally:
-        restore_dropout(model, orig_probs_model)
-        if orig_probs_ref is not None:
-            restore_dropout(ref_model, orig_probs_ref)
-
-    attrs_model_flat = attrs_model.view(attrs_model.size(0), -1)
-    attrs_ref_flat = attrs_ref.view(attrs_ref.size(0), -1)
-
-    diff_norm = (attrs_model_flat - attrs_ref_flat).norm(p=2, dim=1)
-    ref_norm = attrs_ref_flat.norm(p=2, dim=1).clamp(min=1e-6)
-    stability_scores = torch.clamp(1.0 - (diff_norm / ref_norm), min=0.0, max=1.0)
-
-    return float(stability_scores.mean().item())
-
-def roc_auc_multiclass(y_true: torch.Tensor, y_pred_probs: torch.Tensor, n_classes: int) -> float:
+def roc_auc_multiclass(y_true: torch.Tensor, y_pred_probs: torch.Tensor, n_classes: int) -> Optional[float]:
     import torchmetrics.functional as tmf
     # y_pred_probs must be raw probabilities (post-softmax), not argmax indices
     y_true = y_true.long().flatten()
+    # Full-class macro OVR AUC is undefined without positives and negatives for
+    # every configured class. Small development samples can legitimately lack classes.
+    counts = torch.bincount(y_true, minlength=n_classes)
+    if len(y_true) == 0 or (counts == 0).any() or (counts == len(y_true)).any():
+        return None
     # Using 'macro' average and 'ovr' (One-vs-Rest) strategy
     return float(tmf.auroc(y_pred_probs, y_true, task="multiclass", num_classes=n_classes, average="macro")) 

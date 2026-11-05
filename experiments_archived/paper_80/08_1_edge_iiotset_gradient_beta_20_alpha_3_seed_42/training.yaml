@@ -1,0 +1,31 @@
+# Experiment: 08_1_edge_iiotset_gradient_beta_20_alpha_3_seed_42
+# Description: Gradient manipulation on 20% of clients with multiplier alpha=3.
+# Source: runs.md 2.3; paper Table III and VI.C; seed 42 of five independent runs.
+# Full protocol and assumptions: docs/batch-runs.md, Archived paper reproduction queue.
+run_name: 08_1_edge_iiotset_gradient_beta_20_alpha_3_seed_42
+num_rounds: 100
+snapshot_rounds: []
+snapshot_interval: 120
+gpu_enabled_tiers:
+- cloud
+- fog
+- edge
+max_concurrent_gpus: 2
+dataset: edge_iiotset
+dataset_path: data/edge_iiotset/full_dataset/network_traffic_samples.csv
+dataset_fraction: 1.0
+apply_smote: true
+test_split: 0.15
+val_split: 0.15
+model_architecture: cnnlstm
+learning_rate: 0.001
+batch_size: 128
+local_epochs: 5
+random_seed: 42
+n_classes_per: 3
+power_law_a: 0.4
+clip_min: null
+clip_max: null
+clip_norm: 1.0
+edge_inference_int8: true
+edge_inference_samples: 256

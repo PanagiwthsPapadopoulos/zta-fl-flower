@@ -1,0 +1,31 @@
+# Experiment: 05_4_edge_iiotset_label_flip_beta_20_pflip_020_seed_789
+# Description: Label flipping on 20% of clients; p_flip=0.2 is a reproduction assumption.
+# Source: runs.md 2.2; paper Table III; seed 789 of five independent runs.
+# Full protocol and assumptions: docs/batch-runs.md, Archived paper reproduction queue.
+run_name: 05_4_edge_iiotset_label_flip_beta_20_pflip_020_seed_789
+num_rounds: 100
+snapshot_rounds: []
+snapshot_interval: 120
+gpu_enabled_tiers:
+- cloud
+- fog
+- edge
+max_concurrent_gpus: 2
+dataset: edge_iiotset
+dataset_path: data/edge_iiotset/full_dataset/network_traffic_samples.csv
+dataset_fraction: 1.0
+apply_smote: true
+test_split: 0.15
+val_split: 0.15
+model_architecture: cnnlstm
+learning_rate: 0.001
+batch_size: 128
+local_epochs: 5
+random_seed: 789
+n_classes_per: 3
+power_law_a: 0.4
+clip_min: null
+clip_max: null
+clip_norm: 1.0
+edge_inference_int8: true
+edge_inference_samples: 256

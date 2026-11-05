@@ -30,8 +30,10 @@ def poison_partition(
     ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Poisons a dataset for a standard dirty-label backdoor attack, 
-    ensuring only non-target class samples are poisoned.
+    sampling all rows (including already-target labels), as in the authors.
     """
+    if not 0 <= poison_fraction <= 1:
+        raise ValueError("poison_fraction must be in [0, 1]")
     n = int(X.shape[0])
     n_poison = int(poison_fraction * n)
 
@@ -40,17 +42,7 @@ def poison_partition(
 
     g = torch.Generator().manual_seed(seed)
 
-    # Isolate eligible samples (do not poison samples already in the target class)
-    eligible_indices = torch.where(y != target_class)[0]
-
-    # Safety check: ensure we don't try to sample more than what's available
-    actual_n_poison = min(n_poison, len(eligible_indices))
-    if actual_n_poison == 0:
-        return X.clone(), y.clone()
-
-    # Randomly select from the eligible indices pool
-    permuted_idx = torch.randperm(len(eligible_indices), generator=g)[:actual_n_poison]
-    poison_idx = eligible_indices[permuted_idx]
+    poison_idx = torch.randperm(n, generator=g)[:n_poison].to(X.device)
 
     X_out, y_out = X.clone(), y.clone()
 
@@ -62,18 +54,22 @@ def poison_partition(
 
 
 @torch.no_grad()
-def compute_backdoor_asr(model: nn.Module, X_test: torch.Tensor, y_test: torch.Tensor, target_class: int = TARGET_CLASS, trigger_features: tuple = TRIGGER_FEATURES, trigger_value: float = TRIGGER_VALUE, device: str = "cpu", batch_size: int = 256) -> float:
+def compute_backdoor_asr(model: nn.Module, X_test: torch.Tensor, y_test: torch.Tensor, target_class: int = TARGET_CLASS, trigger_features: tuple = TRIGGER_FEATURES, trigger_value: float = TRIGGER_VALUE, device: str = "cpu", batch_size: int = 256) -> float | None:
+    """Percentage of eligible non-target examples classified as the target."""
+    if batch_size < 1:
+        raise ValueError("ASR batch_size must be positive")
     model.eval()
     model.to(device)
     X_eval = X_test[y_test != target_class].to(device)
     if X_eval.shape[0] == 0:
-        return 0.0
+        return None
 
     X_trig = apply_trigger(X_eval, trigger_features, trigger_value)
     n, hits = X_trig.shape[0], 0
     for start in range(0, n, batch_size):
         chunk = X_trig[start:min(start + batch_size, n)]
-        if chunk.shape[0] < 2:
-            continue
-        hits += int((model(chunk).argmax(dim=-1) == target_class).sum().item())
+        logits = model(chunk)
+        if not torch.isfinite(logits).all():
+            raise ValueError("Nonfinite backdoor evaluation predictions")
+        hits += int((logits.argmax(dim=-1) == target_class).sum().item())
     return float(100.0 * hits / max(n, 1))

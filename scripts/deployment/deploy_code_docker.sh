@@ -3,7 +3,7 @@
 # =========================================================
 #   deploy_code_docker.sh
 # 
-#   Acts as the "Fuel" for the infrastructure. Deploys code
+#   Deploys application code
 #   bundles (FABs) to the SuperLink network dynamically.
 #   Cleans stale socket files to prevent runtime deadlocks.
 # =========================================================
@@ -61,9 +61,8 @@ echo "✅ Execution environment refreshed."
 
 cd "$PROJECT_ROOT" || exit 1
 
-# We update the file's "modified time" without touching its contents.
-# Git ignores this, but the Docker containers will read this frozen 
-# timestamp to perfectly synchronize their directory names.
+# Update the modification time without changing file contents.
+# Nodes use this shared timestamp when deriving automatic run directory names.
 touch config/training.yaml
 
 # Execute the standalone Python parser
@@ -119,7 +118,7 @@ for i in $(seq 1 $NUM_FOGS); do
 done
 
 # =========================================================
-# 2. ARTIFACT BUILDER (THE "BIG CRUNCH")
+# 2. DATASET ARTIFACT PREPARATION
 # =========================================================
 echo "================================================="
 echo " 🧱 COMPILING DATASET ARTIFACTS (IF MISSING)      "
@@ -127,6 +126,7 @@ echo "================================================="
 # Spin up a temporary container. If it fails (!), abort everything.
 if ! docker run --rm \
     --entrypoint python3 \
+    --workdir /app --env PYTHONPATH=/app \
     -v "$PROJECT_ROOT/data:/app/data" \
     -v "$PROJECT_ROOT/config:/app/config:ro" \
     -v "$PROJECT_ROOT/src:/app/src:ro" \

@@ -18,13 +18,13 @@ Prerequisites:
        - `global_model.pt`: The saved PyTorch global model weights.
     3. Optional Directory (for Attestation Metrics): 
        - `trustdb/`: A subdirectory containing JSON files from the attestation 
-         rounds. If missing, the script skips calculating FAR, FRR, and FPR.
+         rounds. If missing, the script skips calculating FAR and FRR. Undefined rates are null.
 
 Output:
     Generates a `heavy_metrics.json` artifact inside `results/<experiment_name>` containing:
     - Adversarial Robustness results
     - Backdoor ASR (Attack Success Rate)
-    - Attestation Gatekeeper Metrics (FAR, FRR, FPR)
+    - Attestation FAR/FRR, model-update acceptance, and quarantine metrics
     - Execution timing stats
 
 """
@@ -45,58 +45,20 @@ os.environ["CONFIG_PATH"] = os.path.join(project_root, 'config')
 # Ensure the script can find the 'src' module
 sys.path.append(project_root)
 
+from src.shared.utils.config_loader import optional_float
+from src.shared.data.artifact_manifest import validate_checkpoint_pipeline
 from src.shared.models.factory import get_model
 from src.shared.data.data_loader import get_dataset, DATASET_METADATA
 from src.shared.security.adversarial_math import evaluate_robustness
 from src.shared.security.backdoor_math import compute_backdoor_asr
 from src.shared.utils.config_loader import load_yaml_configs
+from src.shared.utils.security_metrics import calculate_security_rates
 
 
 def calculate_attestation_rates(run_dir: str) -> dict:
-    """Parses the trustdb JSON artifacts to calculate FAR, FRR, and FPR."""
-    trustdb_dir = os.path.join(run_dir, "trustdb")
-    total_benign, total_malicious = 0, 0
-    false_rejections, false_acceptances = 0, 0
+    """Compatibility entry point; poisoning roles are not invalid TPM identities."""
+    return calculate_security_rates(run_dir)["attestation_gatekeeper"]
 
-    if not os.path.exists(trustdb_dir):
-        return {}
-
-    for fname in os.listdir(trustdb_dir):
-        if fname.endswith(".json"):
-            with open(os.path.join(trustdb_dir, fname), "r") as f:
-                fog_data = json.load(f)
-            
-            for r_num, r_data in fog_data.get("rounds", {}).items():
-                accepted = r_data.get("attestation_accepted", [])
-                rejected = r_data.get("attestation_rejected", [])
-                ground_truths = r_data.get("node_ground_truths", {})
-                
-                for node_id in accepted + rejected:
-                    role = ground_truths.get(node_id, "benign")
-                    is_malicious = role != "benign"
-                    
-                    if is_malicious:
-                        total_malicious += 1
-                        if node_id in accepted:
-                            false_acceptances += 1
-                    else:
-                        total_benign += 1
-                        if node_id in rejected:
-                            false_rejections += 1
-
-    # In security/biometrics: False Positive Rate (FPR) = False Rejection Rate (FRR) for benign nodes flagged as attacks.
-    frr = (false_rejections / total_benign) if total_benign > 0 else 0.0
-    far = (false_acceptances / total_malicious) if total_malicious > 0 else 0.0
-
-    return {
-        "total_benign_attempts": total_benign,
-        "total_malicious_attempts": total_malicious,
-        "false_rejections_count": false_rejections,
-        "false_acceptances_count": false_acceptances,
-        "FRR_percentage": round(frr * 100, 4),
-        "FAR_percentage": round(far * 100, 4),
-        "FPR_percentage": round(frr * 100, 4)
-    }
 
 def main():
     parser = argparse.ArgumentParser(description="Standalone Security Evaluator for Federated Models")
@@ -118,6 +80,7 @@ def main():
         run_data = json.load(f)
     
     metadata = run_data.get("metadata", {})
+    validate_checkpoint_pipeline(metadata)
     dataset_name = str(metadata["dataset"]).lower()
     model_arch = str(metadata.get("model_architecture")).lower()
     random_seed = int(metadata.get("random_seed"))
@@ -143,7 +106,7 @@ def main():
     # Load Model
     print("[*] Reconstructing and loading global model... ", end="", flush=True)
     model = get_model(model_arch, n_features, num_classes)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
     print("success")
@@ -154,12 +117,15 @@ def main():
         dataset_name=dataset_name, dataset_path=dataset_path, 
         num_classes=num_classes, random_seed=random_seed, split="test",
         simulate_global_leakage=bool(metadata.get("simulate_global_leakage", False)),
-        apply_smote=bool(metadata.get("apply_smote", True))
+        apply_smote=bool(metadata.get("apply_smote", True)),
+        test_split=float(metadata.get("test_split", 0.15)),
+        val_split=float(metadata.get("val_split", 0.15))
     )
     print("success\n")
 
     payload = {
         "run_name": args.experiment_name,
+        "evaluated_round": run_data["performance"][-1]["round"] if run_data.get("performance") else None,
         "metrics": {},
         "execution_stats": {},
         "timestamp": time.time(),
@@ -176,8 +142,8 @@ def main():
         alpha=float(metadata.get("benign_alpha")),
         n_iter=int(metadata.get("benign_n_iter")),
         device=device,
-        clip_min=float(metadata.get("clip_min")),
-        clip_max=float(metadata.get("clip_max"))
+        clip_min=optional_float(metadata.get("clip_min")),
+        clip_max=optional_float(metadata.get("clip_max"))
     )
     rob_time = time.perf_counter() - t0
     print(f"success ({rob_time:.2f}s)")
@@ -202,18 +168,18 @@ def main():
     payload["metrics"]["backdoor_asr_percentage"] = asr_score
     payload["execution_stats"]["asr_calculation_time_sec"] = round(asr_time, 4)
 
-    # --- METRIC 3: ATTESTATION RATES (FAR/FRR/FPR) ---
-    print("[*] Calculating FAR, FRR, and FPR... ", end="", flush=True)
+    # --- METRIC 3: AUTHENTICATION, UPDATE VERIFICATION, AND QUARANTINE ---
+    print("[*] Calculating separate security outcomes... ", end="", flush=True)
     t0 = time.perf_counter()
-    attestation_metrics = calculate_attestation_rates(run_dir)
+    security_metrics = calculate_security_rates(run_dir)
     att_time = time.perf_counter() - t0
     print(f"success ({att_time:.2f}s)")
-    payload["metrics"]["attestation_gatekeeper"] = attestation_metrics
+    payload["metrics"].update(security_metrics)
     payload["execution_stats"]["attestation_parsing_time_sec"] = round(att_time, 4)
 
     # --- SAVE ARTIFACT ---
     with open(heavy_metrics_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=4)
+        json.dump(payload, f, indent=4, allow_nan=False)
         
     print(f"\n[+] Security evaluation complete! Metrics securely written to:\n    -> {heavy_metrics_path}")
 

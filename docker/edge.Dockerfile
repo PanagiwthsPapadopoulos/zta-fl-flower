@@ -3,7 +3,7 @@ FROM flwr/superexec:1.30.0
 USER root
 ENV PYTHONUNBUFFERED=1
 
-# Install TPM emulators and the missing tools package
+# Install TPM emulation, provisioning and networking tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     swtpm \

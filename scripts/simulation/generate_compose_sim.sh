@@ -10,8 +10,14 @@ EDGES_ARRAY=($2)
 SHARED_DATA_MOUNT="./data"
 SHARED_CONFIG_MOUNT="./config"
 SHARED_RESULTS_MOUNT="./results"
+BATCH_ENV=""
+if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
+    BATCH_ENV="      - FLWR_HOME=/app/runtime/batch/flower
+      - RAY_TMPDIR=/app/runtime/batch/ray"
+fi
 
 if command -v nvidia-smi >/dev/null 2>&1; then
+    GPU_AVAILABLE=true
     GPU_CONFIG="    deploy:
       resources:
         reservations:
@@ -20,6 +26,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
               count: all
               capabilities: [gpu]"
 else
+    GPU_AVAILABLE=false
     GPU_CONFIG=""
 fi
 
@@ -36,13 +43,20 @@ networks:
 services:
   cloud:
     image: panagiotispapadopoulos/zta-cloud-node:latest
+    working_dir: /app
     init: true
     container_name: sim-cloud
     hostname: cloud
+    labels:
+      zta.batch_attempt: "${ZTA_BATCH_ATTEMPT:-standalone}"
     environment:
       - TZ=${HOST_TZ}
       - TIER=cloud
+      - ZTA_TIER=cloud
+      - ZTA_GPU_AVAILABLE=${GPU_AVAILABLE}
       - NUM_FOGS=${NUM_FOGS}
+      - PYTHONPATH=/app
+${BATCH_ENV}
     volumes:
       - ./logs/nodes/cloud:/app/logs
       - ./logs/system:/app/logs/system
@@ -50,7 +64,11 @@ services:
       - ${SHARED_RESULTS_MOUNT}:/app/results
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
       - ./runtime/tpm_state:/app/runtime/tpm_state
+      - ./runtime/batch:/app/runtime/batch
       - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./.gitignore:/app/.gitignore:ro
     networks: [flwr-network]
     entrypoint: []
     command: ["sleep", "infinity"]
@@ -68,14 +86,21 @@ for i in $(seq 1 $NUM_FOGS); do
 
   tpm-${i}-${j}:
     image: panagiotispapadopoulos/zta-edge-node:latest
+    working_dir: /app
     init: true
     container_name: sim-tpm-${i}-${j}
     hostname: tpm-${i}-${j}
+    labels:
+      zta.batch_attempt: "${ZTA_BATCH_ATTEMPT:-standalone}"
     environment:
       - TZ=${HOST_TZ}
       - TPM2TOOLS_TCTI=swtpm:port=2321
+      - PYTHONPATH=/app
     user: "0:0"
     volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ${SHARED_CONFIG_MOUNT}:/app/config:ro
       - ./runtime/tpm_state/edge_${i}_${j}:/app/runtime/tpm_state/edge_${i}_${j}
     networks: [flwr-network]
     entrypoint: []

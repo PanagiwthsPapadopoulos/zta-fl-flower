@@ -40,6 +40,7 @@ for arg in "$@"; do
 done
 
 mkdir -p "$PROJECT_ROOT/runtime/infra"
+mkdir -p "$PROJECT_ROOT/runtime/batch"
 
 PROJECT_DIR_NAME=$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')
 COMPOSE_PROJECT_NAME="${PROJECT_DIR_NAME:-flwr-federation}"
@@ -77,7 +78,7 @@ fi
 
 eval "$CONFIG_VARS"
 
-# Provision the TPM Volumes using the unmodifiable setup script
+# Provision the TPM Volumes using the setup script
 chmod +x "$PROJECT_ROOT/scripts/setup/setup_tpm.sh"
 "$PROJECT_ROOT/scripts/setup/setup_tpm.sh" "$NUM_FOGS" "${EDGES_PER_FOG_ARRAY[*]}"
 

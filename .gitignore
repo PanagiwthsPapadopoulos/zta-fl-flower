@@ -7,8 +7,7 @@ notes/
 images/
 
 # Virtual Environments
-.venv-zta/
-.venv/
+.venv*/
 venv/
 env/
 
@@ -23,9 +22,17 @@ src/network/nginx.conf
 *.ext
 data/tpm_state/
 
+# Local test archives; only selected public evidence is retained
+scripts/tests/reports/*
+!scripts/tests/reports/node_source_tests.json
+!scripts/tests/reports/architecture_fidelity_probe.json
+
 # Compiled PyTorch dataset artifacts
 data/*/artifacts/
 *.pt
+
+# Downloaded benchmarks and cleaned full inputs
+data/*/full_dataset/
 
 # Python Bytecode & Cache
 __pycache__/

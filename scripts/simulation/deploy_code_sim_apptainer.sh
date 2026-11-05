@@ -14,8 +14,22 @@ LOCKS_DIR="$PROJECT_ROOT/runtime/locks"
 BIN_FLWR="/python/venv/bin/flwr"
 FEDERATION=local
 FLWR_TMP_HOME="/tmp/${USER}_flwr"
+MANIFEST_FILE=/tmp/pyproject.cloud.toml
+PATCH_FILE=/tmp/tpm_socket_patch.py
+EXTRA_ARGS=()
+if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
+    mkdir -p "$PROJECT_ROOT/runtime/batch"
+    FLWR_TMP_HOME="$PROJECT_ROOT/runtime/batch/flower"
+    MANIFEST_FILE="$PROJECT_ROOT/runtime/batch/pyproject.cloud.toml"
+    PATCH_FILE="$PROJECT_ROOT/runtime/batch/tpm_socket_patch.py"
+    EXTRA_ARGS=(--bind "$PROJECT_ROOT/runtime/batch:$PROJECT_ROOT/runtime/batch"
+        --env "RAY_TMPDIR=/app/runtime/batch/ray"
+        --env "ZTA_BATCH_ATTEMPT=$ZTA_BATCH_ATTEMPT")
+    printf 'preparing\n' > "$ZTA_BATCH_PHASE_FILE"
+fi
 
 export APPTAINERENV_PATH="/python/venv/bin:$PATH"
+export APPTAINERENV_PYTHONPATH=/app
 
 if [ -L /etc/localtime ]; then
     HOST_TZ=$(readlink /etc/localtime | sed 's#^.*zoneinfo/##')
@@ -60,6 +74,7 @@ echo " 1. LOG ROTATION & TOPOLOGY ANALYSIS"
 echo "================================================="
 
 echo "  Clearing stale Flower and Ray processes..."
+if [ "${ZTA_BATCH_MANAGED:-0}" != "1" ]; then
 pkill -9 -f 'flower-superlink|flower-supernode|flower-superexec|flwr-serverapp|flwr-clientapp|flwr run|flwr-simulation|ray' 2>/dev/null || true
 
 echo "  Clearing old node logs and Ray temporary sessions safely..."
@@ -69,6 +84,8 @@ mkdir -p "$LOCKS_DIR"
 find "$LOG_DIR/nodes" -type f -delete 2>/dev/null || true
 rm -f "$LOG_DIR"/system/run_*.log 2>/dev/null || true
 rm -rf "$PROJECT_ROOT/.flwr" "$FLWR_TMP_HOME" /tmp/ray 2>/dev/null || true
+fi
+mkdir -p "$LOG_DIR/nodes/cloud" "$LOG_DIR/system" "$LOCKS_DIR"
 
 cd "$PROJECT_ROOT" || exit 1
 CONFIG_VARS=$(python3 "$PROJECT_ROOT/scripts/setup/parse_topology.py")
@@ -127,7 +144,7 @@ echo ""
 echo "  External Hardware Emulators (${TOTAL_EDGES} Apptainer swtpm Daemons)"
 
 # =========================================================
-# 2. ARTIFACT BUILDER (THE "BIG CRUNCH")
+# 2. DATASET ARTIFACT PREPARATION
 # =========================================================
 echo "================================================="
 echo "   COMPILING DATASET ARTIFACTS (IF MISSING)      "
@@ -155,8 +172,8 @@ echo " 3. SIMULATION DEPLOYMENT DISPATCH"
 echo "================================================="
 
 TEMPLATE="$PROJECT_ROOT/pyproject.toml"
-echo "  Rewriting pyproject for sim-cloud (num-supernodes=${TOTAL_EDGES})"
-sed "s/^options.num-supernodes = .*/options.num-supernodes = ${TOTAL_EDGES}/" "$TEMPLATE" > /tmp/pyproject.cloud.toml
+echo "  Copying application manifest; simulation node count is passed explicitly to Flower."
+cp "$TEMPLATE" "$MANIFEST_FILE"
 
 # Pre-create FLWR_HOME/config.toml
 mkdir -p "$FLWR_TMP_HOME"
@@ -168,52 +185,36 @@ default = "local"
 address = ":local:"
 EOF
 
-# Create a runtime patch script in /tmp to:
-# 1. Intercept tpm2_* calls and rewrite "swtpm:host=tpm-X-Y..." directly to the UNIX socket path
-# 2. Increase Flower's round_timeout so 100-edge simulations do not time out at 180s
-cat << 'EOF' > /tmp/tpm_socket_patch.py
-import subprocess, inspect, os, re
+# Route tpm2_* calls from simulation TCP addresses to the Apptainer UNIX sockets.
+# Flower's timeout is read from config/network.yaml by the shared server code.
+cat << 'EOF' > "$PATCH_FILE"
+import subprocess, os, re
 
 _orig_run = subprocess.run
 def _patched_run(cmd, *args, **kwargs):
-    if isinstance(cmd, list) and len(cmd) > 0 and str(cmd[0]).startswith("tpm2_"):
-        tcti = os.environ.get("TPM2TOOLS_TCTI", "")
+    if isinstance(cmd, (list, tuple)) and cmd and os.path.basename(str(cmd[0])).startswith("tpm2_"):
+        env = kwargs.get("env")
+        if env is None:
+            env = os.environ
+        tcti = env.get("TPM2TOOLS_TCTI", "")
         m = re.search(r'tpm-(\d+)-(\d+)', tcti)
-        if not m:
-            frame = inspect.currentframe()
-            while frame:
-                for v in frame.f_locals.values():
-                    if isinstance(v, str) and "[EDGE" in v:
-                        m = re.search(r'\[EDGE (\d+)_(\d+)\]', v)
-                        if m:
-                            break
-                if m:
-                    break
-                frame = frame.f_back
         if m:
             f_num, e_num = m.groups()
             sock_path = f"/app/runtime/tpm_state/edge_{f_num}_{e_num}/swtpm.sock"
-            os.environ["TPM2TOOLS_TCTI"] = f"swtpm:path={sock_path}"
+            # TPMAttestation passes env explicitly; update that child environment
+            # without leaking one Edge's socket into the next Ray actor call.
+            kwargs["env"] = {**env, "TPM2TOOLS_TCTI": f"swtpm:path={sock_path}"}
     return _orig_run(cmd, *args, **kwargs)
 
 subprocess.run = _patched_run
 
-try:
-    import flwr.server.server_config as _sc
-    _orig_sc_init = _sc.ServerConfig.__init__
-    def _patched_sc_init(self, num_rounds=1, round_timeout=None):
-        if round_timeout is not None and round_timeout < 3600.0:
-            round_timeout = 3600.0
-        _orig_sc_init(self, num_rounds=num_rounds, round_timeout=round_timeout)
-    _sc.ServerConfig.__init__ = _patched_sc_init
-except Exception:
-    pass
 EOF
 
 touch "$PROJECT_ROOT/config/training.yaml"
 echo "  [cloud] sim: 1 Central Server + ${TOTAL_EDGES} Edge Actors"
 
-apptainer exec --writable-tmpfs $GPU_ARGS --pwd /app \
+launch_simulation() {
+apptainer exec --writable-tmpfs $GPU_ARGS ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} --pwd /app \
     --env TZ="${HOST_TZ}" \
     --env TIER=cloud \
     --env ZTA_TIER=cloud \
@@ -221,7 +222,7 @@ apptainer exec --writable-tmpfs $GPU_ARGS --pwd /app \
     --env NUM_FOGS="${NUM_FOGS}" \
     --env N_SIM="${TOTAL_EDGES}" \
     --env FLWR_HOME="$FLWR_TMP_HOME" \
-    --env PYTHONPATH="/tmp" \
+    --env PYTHONPATH="/tmp:/app" \
     --env OMP_NUM_THREADS=1 \
     --env MKL_NUM_THREADS=1 \
     --env OPENBLAS_NUM_THREADS=1 \
@@ -238,22 +239,22 @@ apptainer exec --writable-tmpfs $GPU_ARGS --pwd /app \
     --bind "$PROJECT_ROOT/runtime/tpm_state:/app/runtime/tpm_state:rw" \
     --bind "$LOCKS_DIR:/app/runtime/locks:rw" \
     --bind "$PROJECT_ROOT/src:/app/src:ro" \
-    --bind "/tmp/pyproject.cloud.toml:/app/pyproject.toml" \
-    --bind "/tmp/tpm_socket_patch.py:/tmp/sitecustomize.py:ro" \
+    --bind "$MANIFEST_FILE:/app/pyproject.toml" \
+    --bind "$PATCH_FILE:/tmp/sitecustomize.py:ro" \
     "$IMAGE_DIR/cloud_node.sif" \
     bash -e -c '
         sed -i "s/dashboard_process\.children()/()/g" /python/venv/lib/python3.13/site-packages/ray/_private/node.py
         sed -i "s/raise AccessDenied(pid) from err/pass/g" /python/venv/lib/python3.13/site-packages/ray/thirdparty_files/psutil/_pslinux.py
 
         FED_CFG=$(/python/venv/bin/python3 -c "
-import tomllib, pathlib
+import os, tomllib, pathlib
 data = tomllib.loads(pathlib.Path(\"/app/pyproject.toml\").read_text())
 local = data.get(\"tool\", {}).get(\"flwr\", {}).get(\"federations\", {}).get(\"local\", {})
 opts = local.get(\"options\", local)
 backend = opts.get(\"backend\", {})
 cres = backend.get(\"client-resources\", opts.get(\"client-resources\", {}))
 iargs = backend.get(\"init-args\", opts.get(\"init-args\", {}))
-cfg = [f\"num-supernodes={opts.get('\''num-supernodes'\'', '"${TOTAL_EDGES}"')}\"]
+cfg = [\"num-supernodes=\" + str(int(os.environ[\"N_SIM\"]))]
 if \"num-cpus\" in cres: cfg.append(f\"client-resources-num-cpus={cres['\''num-cpus'\'']}\")
 if \"num-gpus\" in cres: cfg.append(f\"client-resources-num-gpus={cres['\''num-gpus'\'']}\")
 if \"num-cpus\" in iargs: cfg.append(f\"init-args-num-cpus={iargs['\''num-cpus'\'']}\")
@@ -263,8 +264,15 @@ print(\" \".join(cfg))
 ")
         echo "PATCH: Ray, psutil, and dynamic TPM UNIX socket routing applied successfully."
         echo "CONFIG: Loaded federation config from pyproject.toml -> ${FED_CFG}"
-        /python/venv/bin/flwr run /app local --stream --run-config "mode=\"sim\"" --federation-config "${FED_CFG}"
-    ' > "$LOG_DIR/system/run_cloud.log" 2>&1 &
+        /python/venv/bin/flwr run /app local --stream --run-config "mode=\"sim\" tier=\"cloud\" min_clients=${N_SIM}" --federation-config "${FED_CFG}"
+    '
+}
+if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
+    printf 'training\n' > "$ZTA_BATCH_PHASE_FILE"
+    launch_simulation > "$LOG_DIR/system/run_cloud.log" 2>&1
+else
+    launch_simulation > "$LOG_DIR/system/run_cloud.log" 2>&1 &
+fi
 
 echo ""
 echo "  Global synchronization dispatched!"

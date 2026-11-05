@@ -16,10 +16,19 @@ __pycache__/
 *.pyd
 .pytest_cache/
 
+# Private notes
+notes/
+
 # Local Runtime Data, Logs & Mesh States
 logs/
-.pytest_cache/
-runtime/tpm_state/
+runtime/
+results/
+images/
+experiments_queue/
+.flwr/
+data/*/full_dataset/
+data/*/artifacts/
+scripts/tests/reports/
 
 # Docker Deployments (Targeted Overrides)
 docker-compose.yml

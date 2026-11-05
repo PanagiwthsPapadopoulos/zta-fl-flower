@@ -1,0 +1,30 @@
+{
+  "purpose": "CPU smoke probe, not paper accuracy reproduction",
+  "pipeline": "whole-dataset-splits-minmax-pca40-validated-smote-v3",
+  "training_rows": 128,
+  "local_epochs": 2,
+  "role": "label_flip",
+  "attestation": "mocked for local probe",
+  "torch": "2.14.1",
+  "backend": "qnnpack",
+  "metrics": {
+    "edge_inference_samples": 256,
+    "edge_inference_int8": true,
+    "edge_inference_cpu_threads": 1,
+    "edge_fp32_accuracy": 0.5859375,
+    "edge_fp32_loss": 2.6223952174186707,
+    "edge_fp32_state_bytes": 1670714,
+    "edge_fp32_inference_ms_per_sample": 0.13760482408997632,
+    "edge_int8_accuracy": 0.5859375,
+    "edge_int8_loss": 2.6224300861358643,
+    "edge_int8_state_bytes": 694044,
+    "edge_int8_inference_ms_per_sample": 0.1573551405726903,
+    "accuracy": 0.5859375,
+    "loss": 2.653017520904541,
+    "local_adversarial_training_start_unix": 1792696881.499359,
+    "local_adversarial_training_end_unix": 1792696881.67783,
+    "latency_adv_training_sec": 0.17847108840942383,
+    "update_array_bytes": 415338,
+    "update_tensor_bytes": 424298
+  }
+}

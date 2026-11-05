@@ -1,0 +1,20 @@
+# Experiment: 12_3_edge_iiotset_fgsm_1_eps_010_seed_456
+# Description: FGSM evasion, 1 step(s), epsilon=0.1; same attack/budget used for local defense.
+# Source: runs.md 2.5; paper Table IV; seed 456 of five independent runs.
+# Full protocol and assumptions: docs/batch-runs.md, Archived paper reproduction queue.
+num_fogs: 10
+uniform_edges_per_fog: 10
+custom_fog_topology: '[]'
+broker_ip: 127.0.0.1
+socket_timeout: 3600.0
+round_timeout: 3600.0
+cloud_sa_port: 9001
+cloud_fl_port: 9002
+cloud_ctrl_port: 9003
+fog_sa_base: 9100
+fog_fl_base: 9200
+fog_ctrl_base: 9300
+fog_client_io_base: 9400
+fog_ipc_base: 9500
+edge_client_io_base: 10000
+quantization_bits: 8

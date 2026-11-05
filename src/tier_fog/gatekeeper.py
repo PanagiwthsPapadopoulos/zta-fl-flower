@@ -1,6 +1,7 @@
-import os
 import json
 import logging
+import os
+import re
 from typing import Tuple
 
 from src.tier_fog.tpm_verifier import TPMVerifier
@@ -8,136 +9,163 @@ from src.tier_fog.trust_db import TrustDatabase
 
 
 class ZeroTrustGatekeeper:
-    """A security enforcement gateway for validating incoming update signatures, hardware attestation states, and TrustDB quarantine status."""
+    """Authenticate identities before binding them to Flower clients for this run."""
 
-    def __init__(self, logger: logging.Logger, log_prefix: str, run_metadata: dict):
-        """Initializes the Zero Trust Gatekeeper, configuring the underlying TPM engine and trust database."""
+    def __init__(self, logger: logging.Logger, log_prefix: str, run_metadata: dict, fog_num=None):
         self.logger = logger
         self.log_prefix = log_prefix
         self.run_metadata = run_metadata
+        self.fog_num = fog_num
         self.tpm_state_root = "/app/runtime/tpm_state"
-
-        try:
-            insecure_flag = self.run_metadata.get("insecure", False) or os.getenv("ZTA_INSECURE_MODE", "false").lower() == "true"
-            self.tpm_engine = TPMVerifier(logger=self.logger, insecure_mode=insecure_flag)
-            self.trust_db = TrustDatabase(logger=self.logger)
-        except Exception as e:
-            self.logger.error(f"{self.log_prefix} [GATEKEEPER] Initialization failed: {e}", extra={"round": 0})
-            self.tpm_engine = None
-            self.trust_db = None
+        insecure = run_metadata.get("insecure", False) or os.getenv("ZTA_INSECURE_MODE", "false").lower() == "true"
+        self.tpm_engine = TPMVerifier(logger=logger, insecure_mode=insecure)
+        self.trust_db = TrustDatabase(logger=logger)
+        self.client_identities = {}  # cid -> (authenticated TPM identity, canonical label)
+        self.identity_clients = {}  # one Flower client per TPM per run
+        self.attestation_only_clients = set()
+        self.admission_outcomes = {}
+        self.admission_latency_ms = 0.0
+        self.last_outcomes = {}
+        self._processed = set()
+        self._round = None
 
     def get_live_ledger(self, server_round: int) -> dict:
-        """STRICT READ-ONLY SSOT: Reads the unified Admin ledger directly from the mounted Docker volume."""
-        ledger_path = os.path.join(self.tpm_state_root, "pcr_ledger.json")
-        if os.path.exists(ledger_path):
-            try:
-                with open(ledger_path, "r") as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                self.logger.error(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger is corrupted or empty!", extra={"round": server_round})
-        else:
-            self.logger.warning(f"{self.log_prefix} [GATEKEEPER] SSOT Ledger missing at {ledger_path}! Network locked down.", extra={"round": server_round})
-
-        return {}
-
-    def _get_folder_path(self, untrusted_log_prefix: str) -> str:
-        """Constructs the expected directory path mapped to a specific edge node's localized TPM state."""
-        edge_folder = untrusted_log_prefix.lower().replace('[', '').replace(']', '').replace(' ', '_')
-        return os.path.join(self.tpm_state_root, edge_folder)
-
-    def filter_node_updates(self, tier: str, server_round: int, results: list, active_nonces: dict) -> list:
-        """Filters incoming client model updates based on real-time cryptographic attestation, ledger verification, and TrustDB quarantine status."""
-        trusted_results = []
-        current_ledger = self.get_live_ledger(server_round)
-
-        for client_proxy, fit_res in results:
-            if tier == "cloud":
-                if fit_res.num_examples > 0:
-                    trusted_results.append((client_proxy, fit_res))
-                continue
-
-            is_valid, tpm_id, display_identity = self._verify_single_node(
-                client_proxy, fit_res, server_round, active_nonces, current_ledger
-            )
-
-            if is_valid:
-                self.logger.info(f"{self.log_prefix} Received verified weights from {display_identity}", extra={"round": server_round})
-                fit_res.metrics["tpm_id"] = tpm_id
-                fit_res.metrics["display_identity"] = display_identity
-                trusted_results.append((client_proxy, fit_res))
-            else:
-                self.logger.warning(f"{self.log_prefix} REJECTED: Attestation/PCR/Quarantine check failed for {display_identity}!", extra={"round": server_round})
-
-        return trusted_results
-
-    def _verify_single_node(self, client_proxy, fit_res, server_round, active_nonces, current_ledger: dict) -> Tuple[bool, str, str]:
-        """Verifies a single node's cryptographic attestation token and enforces TrustDB quarantine boundaries."""
-        untrusted_log_prefix = fit_res.metrics.get("log_prefix", f"CID_{client_proxy.cid}")
-        tpm_token_json = fit_res.metrics.get("tpm_token_json", "")
-        folder_path = self._get_folder_path(untrusted_log_prefix)
-
-        if not tpm_token_json:
-            fallback_id = f"CID-{client_proxy.cid}"
-            if self.trust_db:
-                self.trust_db.process_attestation(fallback_id, f"{fallback_id} ({untrusted_log_prefix})", is_valid=False, round_num=server_round)
-            return False, fallback_id, "Missing_Token"
-
         try:
-            token = json.loads(tpm_token_json)
-            tpm_id = token.get("IDi", str(client_proxy.cid))
-            display_identity = f"{tpm_id} ({untrusted_log_prefix})"
+            with open(os.path.join(self.tpm_state_root, "pcr_ledger.json")) as handle:
+                ledger = json.load(handle)
+            if not isinstance(ledger, dict):
+                raise ValueError("PCR ledger must be an object")
+            return ledger
+        except (OSError, ValueError) as exc:
+            self.logger.error(f"{self.log_prefix} PCR ledger unavailable: {exc}", extra={"round": server_round})
+            return {}
 
-            if self.tpm_engine.insecure_mode:
-                if self.trust_db:
-                    self.trust_db.process_attestation(tpm_id, display_identity, is_valid=True, round_num=server_round)
-                    if self.trust_db.is_quarantined(tpm_id):
-                        return False, tpm_id, display_identity
-                return True, tpm_id, display_identity
+    def _get_folder_path(self, label: str) -> str:
+        match = re.fullmatch(r"\[EDGE ([1-9]\d*)_([1-9]\d*)\]", label)
+        if match is None or (self.fog_num is not None and int(match[1]) != self.fog_num):
+            raise ValueError("Invalid edge label or Fog assignment")
+        return os.path.join(self.tpm_state_root, f"edge_{match[1]}_{match[2]}")
 
-            id_file = os.path.join(folder_path, "tpm_id.txt")
-            with open(id_file, "r") as f:
-                expected_tpm_id = f.read().strip()
+    def _begin_round(self, server_round):
+        if self._round != server_round:
+            self._round = server_round
+            self._processed = set()
+            self.last_outcomes = {}
+            self.admission_outcomes = {}
 
-            if tpm_id != expected_tpm_id:
-                self.logger.error(f"{self.log_prefix} Identity Spoofing! Token IDi {tpm_id} != expected {expected_tpm_id} for {untrusted_log_prefix}.", extra={"round": server_round})
-                if self.trust_db:
-                    self.trust_db.process_attestation(expected_tpm_id, display_identity, is_valid=False, round_num=server_round)
-                return False, expected_tpm_id, display_identity
+    def ground_truth(self, cid):
+        """Resolve experiment labels only after identity binding, never from role metrics."""
+        bound = self.client_identities.get(cid)
+        return self.run_metadata.get("experiment_ground_truth", {}).get(bound[1], {}) if bound else {}
 
-            expected_pcr = current_ledger.get(expected_tpm_id)
-            if not expected_pcr:
-                self.logger.error(f"{self.log_prefix} Unauthorized Device! ID {expected_tpm_id} is missing from the Admin ledger.", extra={"round": server_round})
-                if self.trust_db:
-                    self.trust_db.process_attestation(expected_tpm_id, display_identity, is_valid=False, round_num=server_round)
-                return False, tpm_id, display_identity
+    def _reject(self, cid, server_round, reason, attempted=True):
+        bound = self.client_identities.get(cid)
+        identity, label = bound or (f"CID-{cid}", f"CID-{cid}")
+        if bound:
+            if attempted:
+                self.trust_db.process_attestation(identity, label, False, server_round)
+            else:
+                self.trust_db.record_missing_attestation(identity, server_round)
+        self.last_outcomes[cid] = {"tpm_id": identity, "accepted": False,
+                                   "authenticated": False, "reason": reason,
+                                   "attempted": attempted,
+                                   "expected_valid": self.ground_truth(cid).get("attestation_valid")}
+        return False, identity, label
 
-            pubkey_path = os.path.join(folder_path, "ak.pub")
-            max_age = int(self.run_metadata["tpm_freshness_window"])
+    def filter_node_updates(self, tier: str, server_round: int, results: list, active_nonces: dict,
+                            expected_clients=None) -> list:
+        self._begin_round(server_round)
+        ledger = self.get_live_ledger(server_round) if not self.tpm_engine.insecure_mode else {}
+        trusted = []
+        returned = set()
+        for proxy, fit_res in results:
+            returned.add(proxy.cid)
+            # Duplicates are ignored without changing the first authenticated result.
+            if proxy.cid in self._processed:
+                self.logger.warning(f"Duplicate result from {proxy.cid} ignored.", extra={"round": server_round})
+                continue
+            accepted, identity, label = self._verify_single_node(proxy, fit_res, server_round, active_nonces, ledger)
+            # verify_pipeline consumes these post-training result messages.
+            # Admission also calls _verify_single_node, so log here rather than
+            # marking the update-token phase complete during admission.
+            outcome = self.last_outcomes[proxy.cid]
+            if outcome["authenticated"] and not self.tpm_engine.insecure_mode:
+                self.logger.info(
+                    f"{self.log_prefix} Ingesting Cryptographic Result for {label}",
+                    extra={"round": server_round},
+                )
+            elif not outcome["authenticated"] and outcome.get("attempted"):
+                display_label = self.client_identities.get(proxy.cid, (None, None))[1]
+                if display_label is None:
+                    claimed_label = fit_res.metrics.get("log_prefix", "")
+                    try:
+                        self._get_folder_path(claimed_label)
+                        display_label = claimed_label  # Display only; not an identity binding.
+                    except (ValueError, TypeError):
+                        display_label = f"CID-{proxy.cid}"
+                self.logger.error(
+                    f"{self.log_prefix} REJECTED: Attestation/PCR mismatch for {display_label}: {outcome['reason']}",
+                    extra={"round": server_round},
+                )
+            fit_res.metrics["tpm_id"] = identity
+            fit_res.metrics["display_identity"] = label
+            if accepted:
+                trusted.append((proxy, fit_res))
+        expected = set(active_nonces) if expected_clients is None else set(expected_clients)
+        for cid in expected - returned:
+            self._reject(cid, server_round, "missing_response", attempted=False)
+        return trusted
 
-            authenticated = self.tpm_engine.verify_attestation_token(
-                token=token,
-                expected_nonce=active_nonces.get(client_proxy.cid, ""),
-                public_key_path=pubkey_path,
-                expected_pcr=expected_pcr,
-                max_age_seconds=max_age,
-                round_num=server_round,
-            )
-
-            if self.trust_db:
-                was_quarantined = self.trust_db._db.get(tpm_id, {}).get("is_quarantined", False)
-                self.trust_db.process_attestation(tpm_id, display_identity, is_valid=authenticated, round_num=server_round)
-                if self.trust_db:
-                    was_quarantined = self.trust_db._db.get(tpm_id, {}).get("is_quarantined", False)
-                    self.trust_db.process_attestation(tpm_id, display_identity, is_valid=authenticated, round_num=server_round)
-                    if self.trust_db.is_quarantined(tpm_id) or was_quarantined:
-                        self.logger.warning(
-                            f"{self.log_prefix} Node {display_identity} is QUARANTINED (score={self.trust_db.get_score(tpm_id):.3f}). Dropping model update.",
-                            extra={"round": server_round}
-                        )
-                        return False, tpm_id, display_identity
-
-            return authenticated, tpm_id, display_identity
-
-        except Exception as e:
-            self.logger.error(f"Stateless verification error for {untrusted_log_prefix}: {e}", extra={"round": server_round})
-            return False, "UNKNOWN", untrusted_log_prefix
+    def _verify_single_node(self, client_proxy, fit_res, server_round, active_nonces, current_ledger) -> Tuple[bool, str, str]:
+        self._begin_round(server_round)
+        cid = client_proxy.cid
+        if cid in self._processed:
+            identity, label = self.client_identities.get(cid, (f"CID-{cid}", str(cid)))
+            return False, identity, label
+        self._processed.add(cid)
+        # A missing quote is not a cryptographic false rejection. A client-provided
+        # crash status is only an unverified failure report, never authentication.
+        # If a token is present, verify it even when the client claims a crash.
+        if not fit_res.metrics.get("tpm_token_json"):
+            reason = "client_training_crash" if fit_res.metrics.get("status") == "crashed" else "missing_attestation"
+            return self._reject(cid, server_round, reason, attempted=False)
+        try:
+            label = fit_res.metrics.get("log_prefix", "")
+            folder = self._get_folder_path(label)
+            token = json.loads(fit_res.metrics.get("tpm_token_json", ""))
+            if not isinstance(token, dict) or not isinstance(token.get("IDi"), str) or not token["IDi"]:
+                raise ValueError("Missing or invalid TPM identity")
+            identity = token["IDi"]
+            bound = self.client_identities.get(cid)
+            if bound and bound != (identity, label):
+                raise ValueError("Authenticated client identity changed")
+            owner = self.identity_clients.get(identity)
+            if owner is not None and owner != cid:
+                raise ValueError("TPM identity already bound to another client")
+            nonce = active_nonces.get(cid)
+            if not nonce:
+                raise ValueError("No outstanding server challenge")
+            if not self.tpm_engine.insecure_mode:
+                with open(os.path.join(folder, "tpm_id.txt")) as handle:
+                    enrolled_id = handle.read().strip()
+                if identity != enrolled_id:
+                    raise ValueError("Token does not match enrolled TPM identity")
+                expected_pcr = current_ledger.get(identity)
+                if not expected_pcr or not self.tpm_engine.verify_attestation_token(
+                    token=token, expected_nonce=nonce, public_key_path=os.path.join(folder, "ak.pub"),
+                    expected_pcr=expected_pcr, max_age_seconds=int(self.run_metadata["tpm_freshness_window"]),
+                    round_num=server_round,
+                ):
+                    raise ValueError("Attestation verification failed")
+            self.client_identities[cid] = (identity, label)
+            self.identity_clients[identity] = cid
+            self.trust_db.process_attestation(identity, label, True, server_round)
+            accepted = not self.trust_db.is_quarantined(identity)
+            self.last_outcomes[cid] = {"tpm_id": identity, "authenticated": True,
+                                      "accepted": accepted, "reason": "accepted" if accepted else "quarantined",
+                                      "attempted": True,
+                                      "expected_valid": self.ground_truth(cid).get("attestation_valid")}
+            return accepted, identity, f"{identity} ({label})"
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self.logger.warning(f"{self.log_prefix} Rejected {cid}: {exc}", extra={"round": server_round})
+            return self._reject(cid, server_round, str(exc))

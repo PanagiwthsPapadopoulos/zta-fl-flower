@@ -1,4 +1,5 @@
 import hashlib
+import math
 import os
 import subprocess
 import base64
@@ -31,15 +32,18 @@ class TPMVerifier:
         sig_file = f"/tmp/verify_quote_{session_id}.sig"
         nonce_file = f"/tmp/expected_nonce_{session_id}.bin"
         try:
-            if self.insecure_mode or token.get("status") == "insecure_bypass":
+            if self.insecure_mode:
                 return True
 
-            if token.get("status") != "attested":
+            if not isinstance(token, dict) or token.get("status") != "attested":
                 self.logger.warning(f"[TPM-VERIFY] Edge Node sent corrupted/error token: {token}", extra={"round": round_num})
                 return False
 
             token_time = float(token.get("timestamp", 0.0))
             current_time = time.time()
+
+            if not expected_nonce or not expected_pcr or not math.isfinite(token_time):
+                return False
 
             if (current_time - token_time) > max_age_seconds or (token_time - current_time) > 30.0:
                 self.logger.critical(f"[TPM-VERIFY] FRESHNESS CHECK FAILED! Token expired or future-dated. Age: {current_time - token_time:.1f}s > {max_age_seconds}s", extra={"round": round_num})
@@ -53,9 +57,9 @@ class TPMVerifier:
             )
 
             with open(msg_file, "wb") as f:
-                f.write(base64.b64decode(token["quote_msg"]))
+                f.write(base64.b64decode(token["quote_msg"], validate=True))
             with open(sig_file, "wb") as f:
-                f.write(base64.b64decode(token["signature"]))
+                f.write(base64.b64decode(token["signature"], validate=True))
 
             with open(nonce_file, "wb") as f:
                 f.write(bytes.fromhex(expected_qualifying_hex))

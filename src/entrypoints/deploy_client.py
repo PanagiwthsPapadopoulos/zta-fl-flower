@@ -1,3 +1,6 @@
+from src.shared.security.shap_aware import attack_validation_data
+from src.tier_edge.inference import evaluation_loader
+from src.shared.utils.config_loader import optional_float
 import ast
 import os
 import time
@@ -9,6 +12,7 @@ from flwr.common import Context
 from flwr.client import NumPyClient, ClientApp
 
 from src.shared.models.factory import get_model
+from src.shared.utils.reproducibility import seed_training
 from src.shared.network.compression import compress_weights
 from src.shared.data.data_loader import DATASET_METADATA, get_dataset, non_iid_partition
 from src.shared.utils.logger_setup import setup_logger
@@ -24,7 +28,7 @@ class Client(NumPyClient):
     gradient payloads back up the chain.
     """
     
-    def __init__(self, logger, node_type: str, log_prefix: str, fog_num: int, edge_num: int, model=None, train_loader=None, device="cpu", dataset_metadata=None, train_config=None):
+    def __init__(self, logger, node_type: str, log_prefix: str, fog_num: int, edge_num: int, model=None, train_loader=None, device="cpu", dataset_metadata=None, train_config=None, eval_loader=None, shap_data=None):
         """Initializes the Federated Learning Client with explicit node identity, logging prefixes, and local configurations."""
         self.logger = logger
         self.node_type = node_type
@@ -45,20 +49,17 @@ class Client(NumPyClient):
             self.ipc_port = fog_ipc_base + self.fog_num
         elif self.node_type == "edge":
             from src.tier_edge.local_ids import EdgeTrainer
-            from src.tier_edge.byzantine_simulator import AdversaryManager
-            # Init AdversaryManager for injecting threats configured in config/threat.yaml
-            self.adversary_manager = AdversaryManager(
-                fog_num=self.fog_num, 
-                edge_num=self.edge_num, 
-                logger=self.logger
-            )
-            self.train_loader = self.adversary_manager.corrupt_data_if_needed(self.train_loader)
             # Init EdgeTrainer for training on edge devices
             self.trainer = EdgeTrainer(
                 logger=self.logger, log_prefix=self.log_prefix, model=self.model,
                 train_loader=self.train_loader, device=self.device,
-                train_config=self.train_config, dataset_metadata=self.dataset_metadata
+                train_config=self.train_config, dataset_metadata=self.dataset_metadata, eval_loader=eval_loader, shap_data=shap_data
             )
+
+    def get_properties(self, config: dict) -> dict:
+        if not hasattr(self, "trainer"):
+            return {}
+        return self.trainer.attestation_metrics(int(config["server_round"]), config)
 
     def get_parameters(self, config: dict) -> list:
         """Extracts and fully compresses the local model parameters for network transmission to the server."""
@@ -71,6 +72,7 @@ class Client(NumPyClient):
 
     def fit(self, parameters: list, config: dict):
         """Executes the local training round and returns the sequentially updated, optionally corrupted, network parameters."""
+        current_round = config.get("server_round", 0)
         try:
             current_round = config["server_round"]
             # Per-round variable dump
@@ -90,17 +92,15 @@ class Client(NumPyClient):
                 bridge = FogBridgeClient(self.logger, self.log_prefix, self.ipc_port, self.socket_timeout)
                 return bridge.execute_round(current_round, parameters)
             elif self.node_type == "edge":
-                self.adversary_manager.current_round = current_round
                 # Track Local Execution Timestamps & Latency
                 train_start_unix = time.time()
                 res_params, num_examples, metrics = self.trainer.execute_training(parameters, current_round, config)
                 train_end_unix = time.time()
                 
-                metrics["local_adversarial_training_start_unix"] = train_start_unix
-                metrics["local_adversarial_training_end_unix"] = train_end_unix
-                metrics["latency_adv_training_sec"] = train_end_unix - train_start_unix
+                metrics.setdefault("local_adversarial_training_start_unix", train_start_unix)
+                metrics.setdefault("local_adversarial_training_end_unix", train_end_unix)
+                metrics.setdefault("latency_adv_training_sec", train_end_unix - train_start_unix)
                 metrics["log_prefix"] = self.log_prefix
-                res_params, metrics = self.adversary_manager.corrupt_payload_if_needed(res_params, metrics)
                 
                 # Track Dynamic Payload Size
                 payload_size_mb = sum(arr.nbytes for arr in res_params) / (1024 * 1024) if res_params else 0.0
@@ -113,8 +113,9 @@ class Client(NumPyClient):
             return [], 0, {"status": "crashed"}
 
     def evaluate(self, parameters: list, config: dict):
-        """Bypasses local evaluation to preserve computational resources on constrained edge environments."""
-        return 0.0, 1, {"accuracy": 1.0}
+        if not hasattr(self, "trainer"):
+            return 0.0, 0, {}  # A Fog bridge owns no edge inference model.
+        return self.trainer.evaluate(parameters)
 
 
 def _build_fog_client(run_config: dict, node_config: dict):
@@ -194,6 +195,8 @@ def client_fn(context: Context):
             role = assign_edge_roles(run_config, total_edges, global_index, master_seed, logger)
                 
             train_config = {
+                "random_seed": master_seed,
+                "client_index": global_index,
                 "use_gpu_lock": True,
                 "role": role,
                 "learning_rate": float(run_config["learning_rate"]),
@@ -204,10 +207,10 @@ def client_fn(context: Context):
                 "n_features": n_features,
                 "num_classes": num_classes,
                 "local_epochs": int(run_config["local_epochs"]),
-                "clip_min": float(run_config["clip_min"]),
-                "clip_max": float(run_config["clip_max"]),
+                "clip_min": optional_float(run_config["clip_min"]),
+                "clip_max": optional_float(run_config["clip_max"]),
                 "clip_norm": float(run_config["clip_norm"]),
-                "shap_threshold": float(run_config["shap_threshold"]),
+                "edge_inference_int8": bool(run_config["edge_inference_int8"]),
                 "shap_aware_base_attack": str(run_config["shap_aware_base_attack"]),
                 "robustness_eval_attack": str(run_config["robustness_eval_attack"]),
                 "shap_explain_count": int(run_config["shap_explain_count"]),
@@ -215,21 +218,24 @@ def client_fn(context: Context):
                 "max_concurrent_gpus": int(run_config["max_concurrent_gpus"]),
             }
             
-            # Load BENIGN role variables
-            if role == "benign":
-                train_config["adv_ratio"] = float(run_config["benign_adv_ratio"])
-                train_config["eps"] = float(run_config["benign_eps"])
-                train_config["alpha"] = float(run_config["benign_alpha"])
-                train_config["n_iter"] = int(run_config["benign_n_iter"])
+            # Shared adversarial-training settings for benign and label-flip paths.
+            train_config["adv_ratio"] = float(run_config["benign_adv_ratio"])
+            train_config["eps"] = float(run_config["benign_eps"])
+            train_config["alpha"] = float(run_config["benign_alpha"])
+            train_config["n_iter"] = int(run_config["benign_n_iter"])
             
             # Load EXTRA roles variables
             if role == "label_flip":
                 train_config["p_flip"] = float(run_config["p_flip"])
             if role == "gradient_manip":
-                train_config["alpha"] = float(run_config["gradient_alpha"])
+                train_config["gradient_alpha"] = float(run_config["gradient_alpha"])
             if role == "shap_aware":
-                train_config["p_flip"] = float(run_config["p_flip"])
-                train_config["alpha"] = float(run_config["gradient_alpha"])
+                train_config.update(
+                    p_flip=float(run_config["p_flip"]), fog_num=fog_num,
+                    shap_aware_tau=optional_float(run_config.get("shap_aware_tau")),
+                    shap_aware_constrained=run_config.get("shap_aware_constrained", True),
+                    shap_aware_max_backtracks=int(run_config.get("shap_aware_max_backtracks", 10)),
+                )
             
             apply_smote = run_config["apply_smote"]
             simulate_leakage = run_config["simulate_global_leakage"]
@@ -239,7 +245,7 @@ def client_fn(context: Context):
                 dataset_name, dataset_path, num_classes, random_seed, 
                 simulate_global_leakage=simulate_leakage, 
                 apply_smote=apply_smote, split=f"edge_{global_index}", 
-                test_split=test_split, val_split=val_split
+                test_split=test_split, val_split=val_split, partition_config=run_config
             )
             
             # After preparing the dataset, check if the node must perform a backdoor 
@@ -291,12 +297,15 @@ def client_fn(context: Context):
     else:
         logger, node_type, log_prefix, fog_num, train_config = _build_fog_client(run_config, node_config)
 
+    seed_training(random_seed, global_index if node_type == "edge" else -1, 0)
     model = get_model(model_arch, n_features, num_classes)
     
     return Client(
         logger=logger, node_type=node_type, log_prefix=log_prefix, fog_num=fog_num, 
         model=model, train_loader=train_loader, device=device, 
         dataset_metadata=dataset_metadata, train_config=train_config, edge_num=edge_num,
+        eval_loader=evaluation_loader(run_config) if node_type == "edge" else None,
+        shap_data=attack_validation_data(run_config, fog_num) if node_type == "edge" and role == "shap_aware" else None,
     ).to_client()
 
 

@@ -1,21 +1,22 @@
 # Topology
-num_fogs: 2                             # Total number of intermediary Fog nodes operating in the network
-uniform_edges_per_fog: 3                # Forces each Fog to control exactly this many Edge devices
+num_fogs: 10                             # Total number of intermediary Fog nodes operating in the network
+uniform_edges_per_fog: 10                # Forces each Fog to control exactly this many Edge devices
 custom_fog_topology: "[]"               # Array string overriding uniform edges (e.g., "[3, 1]")
 
 # Infrastructure
 broker_ip: "127.0.0.1"                  # Global IP address of the broker routing traffic across the network
 socket_timeout: 3600.0                  # Maximum time (seconds) to wait for network IPC responses before throwing a TimeoutError
+round_timeout: 3600.0                   # Flower client-response deadline in seconds (simulation and deployment)
 
 # Cloud Ports (9000 - 9099)
-cloud_sa_port: 9001                     # Flower SuperLink API Port
+cloud_sa_port: 9001                     # Flower ServerAppIO API port
 cloud_fl_port: 9002                     # Flower Fleet API Port
-cloud_ctrl_port: 9003                   # Flower ServerApp Execution Port
+cloud_ctrl_port: 9003                   # Flower Control API port
 
 # Fog Port Bases (Supports up to 99 Fogs safely. e.g., Fog 1 uses 9101, Fog 2 uses 9102)
-fog_sa_base: 9100                       # Base port for Fog SuperLink APIs
+fog_sa_base: 9100                       # Base port for Fog ServerAppIO APIs
 fog_fl_base: 9200                       # Base port for Fog Fleet APIs
-fog_ctrl_base: 9300                     # Base port for Fog ServerApp Execution
+fog_ctrl_base: 9300                     # Base port for Fog Control APIs
 fog_client_io_base: 9400                # Base port for Fog Client Node connections
 fog_ipc_base: 9500                      # Base port for the custom ZTA-FL Socket Bridge between Fog and Cloud
 
@@ -23,4 +24,4 @@ fog_ipc_base: 9500                      # Base port for the custom ZTA-FL Socket
 edge_client_io_base: 10000              # Base port for Edge Client Node connections (Supports 99 edges per fog)
 
 # Communication
-quantization_bits: 32                   # Bit-width for dynamic payload compression (8=INT8, 16=FP16, 32=FP32/Disabled)
+quantization_bits: 8                   # Transport encoding (8=uint8 with scale metadata, 16=FP16, 32=FP32); training stays float

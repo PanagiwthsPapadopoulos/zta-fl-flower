@@ -16,7 +16,7 @@ def compress_weights(weights: list[np.ndarray], bits: int) -> list[np.ndarray]:
             
             w_min, w_max = float(w.min()), float(w.max())
             scale = (w_max - w_min) / 255.0 if w_max > w_min else 1.0
-            q_w = np.round((w - w_min) / scale).astype(np.uint8)
+            q_w = np.asarray(np.round((w - w_min) / scale), dtype=np.uint8)
             compressed.append(q_w)
             compressed.append(np.array([w_min, scale], dtype=np.float32))
         return compressed

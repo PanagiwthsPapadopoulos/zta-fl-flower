@@ -37,7 +37,7 @@ def _host_gpu_available() -> bool:
     return os.getenv("ZTA_GPU_AVAILABLE", "true").lower() == "true"
 
 
-def get_device() -> str:
+def get_device(tier: str | None = None) -> str:
     """Returns the torch device string for the current process.
 
     Policy, evaluated in order:
@@ -47,7 +47,8 @@ def get_device() -> str:
       4. MPS probe returns True                     -> "mps"
       5. Otherwise                                  -> "cpu"
     """
-    tier = _current_tier()
+    # Simulation Edge actors share the Cloud container's environment.
+    tier = _current_tier() if tier is None else tier.lower()
     enabled_tiers = _gpu_enabled_tiers()
 
     if tier not in enabled_tiers:
@@ -70,7 +71,7 @@ def get_device() -> str:
 
 
 def get_dynamic_thread_limit(estimated_task_vram_gb: float = 1.0, fallback_limit: int = 1) -> int:
-    """Calculates safe concurrent GPU/CPU workers to prevent memory crashes."""
+    """Estimates a worker limit from available GPU memory or CPU count."""
     device = get_device()
     try:
         if device == "cuda":
@@ -84,9 +85,9 @@ def get_dynamic_thread_limit(estimated_task_vram_gb: float = 1.0, fallback_limit
         return fallback_limit
 
 
-def get_dataloader_kwargs() -> dict:
-    """Centralizes optimal DataLoader memory and worker configurations."""
+def get_dataloader_kwargs(device: str | None = None) -> dict:
+    """Returns DataLoader worker and pinned-memory settings."""
     return {
         "num_workers": 0,
-        "pin_memory": get_device() != "cpu",
+        "pin_memory": (get_device() if device is None else device) != "cpu",
     }

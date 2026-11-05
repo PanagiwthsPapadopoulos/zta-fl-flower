@@ -9,7 +9,9 @@ Execute the following command to spin up an isolated Docker container for testin
 
 docker run --rm \
     --entrypoint python3 \
+    --workdir /app --env PYTHONPATH=/app \
     -v "$PWD/data:/app/data" \
+    -v "$PWD/config:/app/config:ro" \
     -v "$PWD/src:/app/src:ro" \
     -v "$PWD/scripts:/app/scripts:ro" \
     panagiotispapadopoulos/zta-cloud-node:latest \
@@ -28,11 +30,9 @@ WHEN TO USE THIS:
   data maps into memory correctly before deploying a full Federated Learning round.
 
 HOW IT WORKS:
-In our "Compile Once, Run Anywhere" architecture, datasets are not mathematically processed 
-at runtime. Instead, they are pre-compiled into binary artifacts. This script calls `get_dataset()`, 
-which dynamically generates a unique filename prefix based on the parameters provided below 
-(e.g., `edge_iiotset_leakage_False_smote_True_train.pt`). It then attempts to instantly load 
-that specific binary file from the mounted `/data/` volume into RAM.
+Dataset preprocessing is performed offline, before node execution. This script calls
+`get_dataset()` to validate and load the prepared training artifact selected by the
+active configuration. Artifacts are read from the mounted `/app/data/` directory.
 
 THE PARAMETERS:
 * dataset_name: The internal identifier of the dataset (e.g., "edge_iiotset").

@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from src.shared.utils.metrics import accuracy, macro_f1, roc_auc_multiclass
 from src.shared.data.data_loader import get_dataset
 from src.shared.models.factory import get_model
-from src.shared.network.compression import decompress_weights
+from src.shared.network.model_payload import load_model_arrays
 
 
 class GlobalEvaluator:
@@ -44,7 +44,7 @@ class GlobalEvaluator:
         self.model = get_model(model_arch, self.n_features, self.num_classes).to(self.device)
         self.criterion = nn.CrossEntropyLoss()
 
-        # Load the evaluation dataset using the updated function signature
+        # Load the prepared evaluation tensors and class count.
         simulate_leakage = self.run_metadata["simulate_global_leakage"]
         apply_smote = self.run_metadata["apply_smote"]
         self.test_data = get_dataset(
@@ -54,11 +54,13 @@ class GlobalEvaluator:
             random_seed=self.random_seed,
             simulate_global_leakage=simulate_leakage,
             apply_smote=apply_smote,
-            split="test"
+            split="test",
+            test_split=self.run_metadata["test_split"],
+            val_split=self.run_metadata["val_split"]
         )
         
-        # Note: get_dataset now returns a tuple of (X_tensor, y_tensor, num_classes)
-        # We need to unpack just the tensors for the DataLoader
+        # get_dataset returns (X_tensor, y_tensor, num_classes).
+        # Only the input and label tensors belong in the TensorDataset.
         X_test, y_test, _ = self.test_data
         
         # Create a TensorDataset to make it compatible with DataLoader
@@ -72,14 +74,10 @@ class GlobalEvaluator:
         
         # 1. Decompress and load the weights into the model
         quantization_bits = int(self.run_metadata["quantization_bits"])
-        decompressed_params = decompress_weights(parameters, quantization_bits)
-
-        state_dict = {}
-        for k, v in zip(self.model.state_dict().keys(), decompressed_params):
-            state_dict[k] = torch.tensor(v)
-        
-        self.model.load_state_dict(state_dict, strict=True)
+        load_model_arrays(self.model, parameters, quantization_bits)
         self.model.eval()
+        if len(self.test_loader.dataset) == 0:
+            raise ValueError("Global evaluation requires a nonempty test split")
 
         # 2. Run the evaluation loop
         total_loss = 0.0
@@ -91,28 +89,33 @@ class GlobalEvaluator:
             for inputs, targets in self.test_loader:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
+                if not torch.isfinite(outputs).all():
+                    raise ValueError("Nonfinite global evaluation predictions")
                 loss = self.criterion(outputs, targets)
                 total_loss += loss.item() * inputs.size(0)
                 
                 # Apply softmax to get probability distributions for AUC
                 probs = torch.nn.functional.softmax(outputs, dim=1)
-                all_probs.extend(probs.cpu().numpy())
+                all_probs.append(probs.cpu())
                 
                 _, preds = torch.max(outputs, 1)
-                all_preds.extend(preds.cpu().numpy())
-                all_targets.extend(targets.cpu().numpy())
+                all_preds.append(preds.cpu())
+                all_targets.append(targets.cpu())
 
         # 3. Calculate actual metrics
         avg_loss = total_loss / len(self.test_loader.dataset)
-        acc = accuracy(torch.tensor(all_targets), torch.tensor(all_preds))
-        f1 = macro_f1(torch.tensor(all_targets), torch.tensor(all_preds))
-        auc = roc_auc_multiclass(torch.tensor(all_targets), torch.tensor(all_probs), self.num_classes)
+        all_preds, all_targets, all_probs = torch.cat(all_preds), torch.cat(all_targets), torch.cat(all_probs)
+        acc = accuracy(all_targets, all_preds)
+        f1 = macro_f1(all_targets, all_preds, self.num_classes)
+        auc = roc_auc_multiclass(all_targets, all_probs, self.num_classes)
 
         metrics = {
             "accuracy": acc,
             "macro_f1": f1,
-            "auc": auc
+            "auc_defined": auc is not None,
         }
+        if auc is not None:
+            metrics["auc"] = auc
 
         self.logger.info(
             f"{self.tier.upper()} Eval Round {server_round} | "
@@ -120,7 +123,7 @@ class GlobalEvaluator:
         )
 
         self.logger.info(
-            f"Preds: {preds[:10]} | Targets: {targets[:10]}"
+            f"Preds: {all_preds[:10]} | Targets: {all_targets[:10]}"
         )
 
         # Return cleanly so CloudAggregator can handle the saving

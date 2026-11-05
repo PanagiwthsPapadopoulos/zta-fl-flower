@@ -1,24 +1,19 @@
 import os
 import json
 import time
-import copy
-import traceback
 import logging
 from datetime import datetime
-from collections import OrderedDict
 from typing import Tuple, List, Optional, Any, Dict
 
 import torch
-import numpy as np
 from flwr.server.strategy import FedAvg
-from flwr.common import parameters_to_ndarrays, ndarrays_to_parameters
+from flwr.common import parameters_to_ndarrays
 
-from src.shared.models.factory import get_model
-from src.shared.network.compression import compress_weights, decompress_weights
-from src.shared.utils.metrics import federated_averaging
+from src.tier_cloud.model_state import GlobalModelState
+from src.shared.network.model_payload import decode_model, positive_trust, validate_region_result
 
 
-class CloudAggregator(FedAvg):
+class CloudAggregator(GlobalModelState, FedAvg):
     """The central orchestration engine routing the federation at Cloud Layer.
     Acts as the network dispatcher bridging cross-tier TCP flows and managing the global weights array.
     """
@@ -32,7 +27,6 @@ class CloudAggregator(FedAvg):
         val_data: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         n_features: int = 40,
         num_classes: int = 15,
-        shap_threshold: float = 0.5,
         run_metadata: Optional[dict] = None,
         *args,
         **kwargs
@@ -51,11 +45,8 @@ class CloudAggregator(FedAvg):
         self.val_data = val_data
         self.n_features = n_features
         self.num_classes = num_classes
-        self.shap_threshold = shap_threshold
-        self.global_model = get_model(self.model_architecture, self.n_features, self.num_classes)
-        self.cached_global_state = None
-        self.previous_val_acc = None
         self.run_metadata = run_metadata or {}
+        self.initialize_global_state()
         self.experiment_name = self.run_metadata.get("experiment_name", "default_run")
         self.snapshot_rounds = self.run_metadata["snapshot_rounds"]
         self.snapshot_interval = self.run_metadata["snapshot_interval"]
@@ -67,104 +58,48 @@ class CloudAggregator(FedAvg):
 
     def configure_fit(self, server_round: int, parameters: list, client_manager: Any) -> list:
         """Configures the next training round and logs the broadcast."""
+        self.sync_global_state(parameters)
+        self.active_nonces = {}
         self.round_start_time = time.time()
         self.logger.info(f"{self.log_prefix} Shouting to all FOG clients!", extra={"round": server_round})
         return super().configure_fit(server_round, parameters, client_manager)
 
-    def aggregate_fit(self, server_round: int, results: list, failures: list) -> Tuple[Optional[list], dict]:
-        """Aggregates trusted regional models from the Fog tier into a global model."""
-        if not results:
-            return None, {}
-        round_display = server_round
+    def configure_evaluate(self, server_round, parameters, client_manager):
+        return []  # Centralized evaluation supplies the authoritative metrics.
 
-        trusted_results = []
-        for client_proxy, fit_res in results:
-            if fit_res.num_examples > 0:
-                trusted_results.append((client_proxy, fit_res))
-
-        if not trusted_results:
-            return None, {}
-
-        local_models, sizes, trust_weights, tpm_ids, display_names = self._extract_models_from_results(trusted_results)
-        try:
-            aggregated_model, saboteurs, rewarded_nodes = self._apply_aggregation_strategy(
-                local_models, sizes, trust_weights, tpm_ids, display_names
-            )
-
-            self._evaluate_rollback_sanity_check(aggregated_model, round_display)
-            self.global_model.load_state_dict(aggregated_model.state_dict())
-
-            quantization_bits = int(self.run_metadata["quantization_bits"])
-            raw_ndarrays = [val.cpu().numpy() for _, val in aggregated_model.state_dict().items()]
-            compressed_ndarrays = compress_weights(raw_ndarrays, quantization_bits)
-            aggregated_parameters = ndarrays_to_parameters(compressed_ndarrays)
-            aggregated_metrics = {}
-        except Exception as e:
-            self.logger.error(f"{self.log_prefix} Math failed: {e}\n{traceback.format_exc()}", extra={"round": round_display})
-            return None, {}
-
-        return aggregated_parameters, aggregated_metrics
-
-    def _evaluate_rollback_sanity_check(self, aggregated_model: torch.nn.Module, round_display: int) -> None:
-        """Evaluates the aggregated global model and rolls back to the previous round state if accuracy collapses."""
-        if self.val_data is not None:
-            X_val, y_val = self.val_data
-            aggregated_model.eval()
-            with torch.no_grad():
-                device = next(aggregated_model.parameters()).device
-                X_val_gpu = X_val.to(device)
-                y_val_gpu = y_val.to(device)
-                preds = aggregated_model(X_val_gpu).argmax(dim=-1)
-                val_acc = (preds == y_val_gpu).float().mean().item()
-
-            if self.previous_val_acc is None:
-                self.cached_global_state = copy.deepcopy(aggregated_model.state_dict())
-                self.previous_val_acc = val_acc
-                return
-
-            rollback_fraction = float(self.run_metadata["rollback_threshold"])
-            dynamic_threshold = self.previous_val_acc * rollback_fraction
-
-            if val_acc < dynamic_threshold and self.cached_global_state is not None:
-                self.logger.info(f"{self.log_prefix} Rollback check. Acc: {val_acc:.4f}, Threshold: {dynamic_threshold:.4f}. Rolling back weights!", extra={"round": round_display})
-                aggregated_model.load_state_dict(self.cached_global_state)
-            else:
-                self.logger.info(f"{self.log_prefix} Rollback check. Acc: {val_acc:.4f}, Threshold: {dynamic_threshold:.4f}. Passed. Caching state.", extra={"round": round_display})
-                self.cached_global_state = copy.deepcopy(aggregated_model.state_dict())
-                self.previous_val_acc = val_acc
-        else:
-            self.cached_global_state = copy.deepcopy(aggregated_model.state_dict())
-
-    def _extract_models_from_results(self, trusted_results: list) -> Tuple[List[torch.nn.Module], List[int], List[float], List[str], List[str]]:
-        """Unpacks and decompresses Fog-tier network payloads into native PyTorch models."""
-        local_models, sizes, trust_weights, tpm_ids, display_names = [], [], [], [], []
-        quantization_bits = int(self.run_metadata["quantization_bits"])
-        for client_proxy, fit_res in trusted_results:
-            tpm_id = fit_res.metrics.get("tpm_id", f"CID-{client_proxy.cid}")
-            display_identity = fit_res.metrics.get("display_identity", f"{tpm_id} (Unknown)")
-
-            model = get_model(self.model_architecture, self.n_features, self.num_classes)
-            raw_params = parameters_to_ndarrays(fit_res.parameters)
-            decompressed_params = decompress_weights(raw_params, quantization_bits)
-            state_dict = OrderedDict({k: torch.tensor(v) for k, v in zip(model.state_dict().keys(), decompressed_params)})
-            model.load_state_dict(state_dict, strict=True)
-
-            local_models.append(model)
-            sizes.append(fit_res.num_examples)
-            trust_weights.append(float(fit_res.metrics.get("total_regional_trust", 1.0)))
-            tpm_ids.append(tpm_id)
-            display_names.append(display_identity)
-        return local_models, sizes, trust_weights, tpm_ids, display_names
-
-    def _apply_aggregation_strategy(self, local_models: List[torch.nn.Module], sizes: List[int], trust_weights: List[float], tpm_ids: List[str], display_names: List[str]) -> Tuple[torch.nn.Module, List[Tuple[str, str]], List[Tuple[str, str]]]:
-        """Applies a trust-weighted Federated Averaging strategy at the Cloud layer."""
-        total_trust = sum(trust_weights)
-        weights = [w / total_trust for w in trust_weights] if total_trust > 0 else None
-        return federated_averaging(local_models, weights=weights), [], []
+    def aggregate_fit(self, server_round, results, failures):
+        models, weights, rejected = [], [], []
+        empty_regions, failed_regions = 0, len(failures)
+        for proxy, result in results:
+            try:
+                if result.metrics.get("status") == "crashed" and not result.parameters.tensors and result.num_examples == 0:
+                    failed_regions += 1
+                    continue
+                status = validate_region_result(result.num_examples, bool(result.parameters.tensors), result.metrics)
+                if status == "error":
+                    failed_regions += 1
+                    continue
+                if status != "aggregated":
+                    empty_regions += 1
+                    continue
+                trust = positive_trust(result.metrics.get("total_regional_trust"))
+                model = decode_model(self.global_model, result.parameters, self.quantization_bits)
+                if trust > 0:
+                    models.append(model)
+                    weights.append(trust)
+            except (ValueError, TypeError, OverflowError, IndexError, KeyError, EOFError) as exc:
+                rejected.append(proxy.cid)
+                self.logger.warning(f"Rejected Fog {proxy.cid}: {exc}", extra={"round": server_round})
+        parameters, metrics = self.aggregate_regions(models, weights, server_round)
+        metrics["rejected_regions"] = len(rejected)
+        metrics["empty_regions"] = empty_regions
+        metrics["failed_regions"] = failed_regions
+        return parameters, metrics
 
     def evaluate(self, server_round: int, parameters: list) -> Optional[Tuple[float, dict]]:
         """Evaluates the global model, records metrics, and persists the state to disk."""
         self.logger.info(f"{self.log_prefix}: Calling Cloud Evaluate! Saving model weights every {self.snapshot_interval} rounds and specifically at rounds: {self.snapshot_rounds}", extra={"round": server_round})
+        self.sync_global_state(parameters)
         eval_res = super().evaluate(server_round, parameters)
 
         if eval_res is None:
@@ -182,6 +117,7 @@ class CloudAggregator(FedAvg):
             "global_loss": loss,
             "global_accuracy": metrics.get("accuracy"),
             "global_macro_f1": metrics.get("macro_f1"),
+            "global_auc": metrics.get("auc"),
             "round_latency_total_sec": round_latency_total_sec,
             "payload_size_mb": payload_size_mb,
             "timestamp": datetime.now().isoformat()

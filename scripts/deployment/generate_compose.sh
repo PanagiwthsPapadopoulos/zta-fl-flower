@@ -18,6 +18,7 @@ CLOUD_LOG_MOUNT="./logs/nodes/cloud"
 
 # Dynamic Host GPU Detection
 if command -v nvidia-smi >/dev/null 2>&1; then
+    GPU_AVAILABLE=true
     GPU_CONFIG="    deploy:
       resources:
         reservations:
@@ -26,6 +27,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
               count: all
               capabilities: [gpu]"
 else
+    GPU_AVAILABLE=false
     GPU_CONFIG=""
 fi
 
@@ -77,9 +79,13 @@ services:
 
   cloud-serverapp:
     image: panagiotispapadopoulos/zta-cloud-node:latest
+    working_dir: /app
     environment: 
       - TZ=${HOST_TZ}
+      - ZTA_TIER=cloud
+      - ZTA_GPU_AVAILABLE=${GPU_AVAILABLE}
       - ZTA_INSECURE_MODE=${INSECURE_MODE}
+      - PYTHONPATH=/app
     command:
       - "--insecure"
       - "--plugin-type"
@@ -91,6 +97,8 @@ services:
       cloud-superlink:
         condition: service_healthy
     volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
       - ${CLOUD_LOG_MOUNT}:/app/logs
       - ${SHARED_DATA_MOUNT}:/app/data
       - ${SHARED_RESULTS_MOUNT}:/app/results
@@ -165,7 +173,8 @@ for i in $(seq 1 $NUM_FOGS); do
 
   fog-${i}-clientapp:
     image: panagiotispapadopoulos/zta-cloud-node:latest
-    environment: [TZ=${HOST_TZ}, FOG_SERVER_HOST=fog-${i}-serverapp, IPC_PORT=${FOG_CLIENT_IO}]
+    working_dir: /app
+    environment: [TZ=${HOST_TZ}, FOG_SERVER_HOST=fog-${i}-serverapp, IPC_PORT=${FOG_CLIENT_IO}, PYTHONPATH=/app, ZTA_TIER=fog, ZTA_GPU_AVAILABLE=false]
     command:
       - "--insecure"
       - "--plugin-type"
@@ -175,6 +184,8 @@ for i in $(seq 1 $NUM_FOGS); do
     networks: [flwr-network]
     depends_on: [fog-${i}-supernode]
     volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
       - ${FOG_LOG_MOUNT}:/app/logs
       - ${SHARED_DATA_MOUNT}:/app/data:ro
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
@@ -208,7 +219,8 @@ for i in $(seq 1 $NUM_FOGS); do
 
   fog-${i}-serverapp:
     image: panagiotispapadopoulos/zta-cloud-node:latest
-    environment: [TZ=${HOST_TZ}, IPC_PORT=${FOG_SA}, ZTA_INSECURE_MODE=${INSECURE_MODE}]
+    working_dir: /app
+    environment: [TZ=${HOST_TZ}, IPC_PORT=${FOG_SA}, ZTA_INSECURE_MODE=${INSECURE_MODE}, PYTHONPATH=/app, ZTA_TIER=fog, ZTA_GPU_AVAILABLE=${GPU_AVAILABLE}]
     command:
       - "--insecure"
       - "--plugin-type"
@@ -220,6 +232,8 @@ for i in $(seq 1 $NUM_FOGS); do
       fog-${i}-superlink:
         condition: service_healthy
     volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
       - ${FOG_LOG_MOUNT}:/app/logs
       - ${SHARED_DATA_MOUNT}:/app/data:ro
       - ${SHARED_CONFIG_MOUNT}:/app/config:ro
@@ -271,10 +285,15 @@ EOF
 
   edge-${i}-${j}-clientapp:
     image: panagiotispapadopoulos/zta-edge-node:latest
+    working_dir: /app
+    entrypoint: ["/bin/bash", "/app/scripts/ops/edge_entrypoint.sh"]
     environment: 
       - TZ=${HOST_TZ}
+      - ZTA_TIER=edge
+      - ZTA_GPU_AVAILABLE=${GPU_AVAILABLE}
       - TPM2TOOLS_TCTI=swtpm:port=2321
       - ZTA_INSECURE_MODE=${INSECURE_MODE}
+      - PYTHONPATH=/app
     command:
       - "--insecure"
       - "--plugin-type"
@@ -284,6 +303,8 @@ EOF
     networks: [flwr-network]
     depends_on: [edge-${i}-${j}-supernode]
     volumes:
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
       - ${EDGE_LOG_MOUNT}:/app/logs
       - ${SHARED_DATA_MOUNT}:/app/data:ro
       - ./runtime/tpm_state/edge_${i}_${j}:/app/runtime/tpm_state/edge_${i}_${j}

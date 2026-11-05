@@ -3,13 +3,14 @@
 # =========================================================
 #   deploy_code_apptainer.sh
 # 
-#   Acts as the "Fuel" for the infrastructure. Deploys code
+#   Deploys application code
 #   bundles (FABs) to the Apptainer SuperLink network.
 # =========================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 LOG_DIR="$PROJECT_ROOT/logs"
+export APPTAINERENV_PYTHONPATH=/app
 
 # =========================================================
 # PRE-FLIGHT DEPENDENCY & HEALTH CHECK
@@ -104,12 +105,12 @@ for i in $(seq 1 $NUM_FOGS); do
 done
 
 # =========================================================
-# 2. ARTIFACT BUILDER (THE "BIG CRUNCH")
+# 2. DATASET ARTIFACT PREPARATION
 # =========================================================
 echo "================================================="
 echo " 🧱 COMPILING DATASET ARTIFACTS (IF MISSING)      "
 echo "================================================="
-if ! apptainer exec \
+if ! apptainer exec --pwd /app \
     --bind "$PROJECT_ROOT/data:/app/data" \
     --bind "$PROJECT_ROOT/config:/app/config:ro" \
     --bind "$PROJECT_ROOT/src:/app/src:ro" \
