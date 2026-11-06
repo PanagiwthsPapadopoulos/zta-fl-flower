@@ -24,6 +24,7 @@ from src.shared.utils.security_metrics import calculate_security_rates
 from src.tier_cloud.cloud_aggregator_deploy import CloudAggregator as DeployCloud
 from src.tier_cloud.cloud_aggregator_sim import CloudAggregator as SimCloud
 from src.tier_cloud.model_state import GlobalModelState
+from src.tier_cloud.global_evaluator import GlobalEvaluator
 from src.tier_fog.client_instructions import configure_edge_fit
 from src.tier_fog.gatekeeper import ZeroTrustGatekeeper
 from src.tier_fog.round_processing import process_region
@@ -75,6 +76,43 @@ class PipelineTests(unittest.TestCase):
                         strategy.evaluate(1, encode_model(strategy.global_model, 32))
                     record = json.loads(Path("results/test/test.json").read_text())
                     self.assertEqual(record["performance"][0]["global_auc"], expected)
+                    self.assertIsNone(record["performance"][0]["global_auc_details"])
+
+    def test_both_cloud_strategies_persist_real_auc_and_coverage(self):
+        for strategy_class in (DeployCloud, SimCloud):
+            for labels, expected, status, counts in (([0, 2, 0], .5, "defined", [2, 0, 1]),
+                                                     ([0, 0, 0], None, "insufficient_test_classes", [3, 0, 0])):
+                with self.subTest(strategy=strategy_class, status=status), TemporaryDirectory() as directory, working_directory(directory):
+                    model = nn.Linear(2, 3)
+                    with torch.no_grad():
+                        model.weight.zero_()
+                        model.bias.zero_()
+                    evaluator = GlobalEvaluator.__new__(GlobalEvaluator)
+                    evaluator.model, evaluator.num_classes = copy.deepcopy(model), 3
+                    evaluator.run_metadata = {"quantization_bits": 32}
+                    evaluator.device, evaluator.tier, evaluator.logger = "cpu", "cloud", LOGGER
+                    evaluator.criterion = nn.CrossEntropyLoss()
+                    evaluator.test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(
+                        torch.zeros(3, 2), torch.tensor(labels)), batch_size=2)
+                    strategy = strategy_class.__new__(strategy_class)
+                    FedAvg.__init__(strategy, evaluate_fn=evaluator.evaluate)
+                    strategy.logger, strategy.log_prefix = LOGGER, "CLOUD"
+                    strategy.snapshot_interval, strategy.snapshot_rounds = 0, []
+                    strategy.quantization_bits, strategy.global_model = 32, model
+                    strategy.experiment_name = "test"
+                    strategy.results_dict = {"metadata": {}, "performance": []}
+                    for round_num in (0, 1):
+                        strategy.evaluate(round_num, encode_model(model, 32))
+                    record = json.loads(Path("results/test/test.json").read_text())
+                    self.assertEqual(len(record["performance"]), 2)
+                    for row in record["performance"]:
+                        self.assertEqual(row["global_auc"], expected)
+                        self.assertEqual(row["global_auc_defined"], expected is not None)
+                        details = row["global_auc_details"]
+                        self.assertEqual(details["status"], status)
+                        self.assertEqual(details["class_counts"], counts)
+                        self.assertEqual(details["evaluated_classes"], [0, 2] if expected is not None else [])
+                        self.assertEqual(details["per_class_auc"], [.5, None, .5] if expected is not None else [None] * 3)
 
     def test_shared_region_processes_real_shap_and_records_correct_security_outcomes(self):
         for simulated, bits, fallback in ((s, b, f) for s in (False, True) for b in (32, 8) for f in (False, True)):

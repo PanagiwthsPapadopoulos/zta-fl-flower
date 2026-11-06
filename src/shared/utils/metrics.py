@@ -247,13 +247,49 @@ def compute_shap_stability(
 
 
 def roc_auc_multiclass(y_true: torch.Tensor, y_pred_probs: torch.Tensor, n_classes: int) -> Optional[float]:
+    """Macro OVR ROC-AUC over classes with positives and negatives in the test set."""
+    return roc_auc_multiclass_details(y_true, y_pred_probs, n_classes)[0]
+
+
+def roc_auc_multiclass_details(
+    y_true: torch.Tensor, y_pred_probs: torch.Tensor, n_classes: int,
+) -> tuple[Optional[float], dict]:
+    """Return observed-class macro AUC and JSON-safe coverage/per-class diagnostics.
+
+    Scores must be softmax probabilities across ALL configured outputs. Do not
+    renormalize the observed columns: that changes the model's rankings.
+    """
     import torchmetrics.functional as tmf
-    # y_pred_probs must be raw probabilities (post-softmax), not argmax indices
-    y_true = y_true.long().flatten()
-    # Full-class macro OVR AUC is undefined without positives and negatives for
-    # every configured class. Small development samples can legitimately lack classes.
+    if n_classes < 2:
+        raise ValueError("ROC-AUC requires at least two configured classes")
+    y_true = y_true.detach().flatten()
+    probs = y_pred_probs.detach()
+    if probs.ndim != 2 or probs.shape != (len(y_true), n_classes):
+        raise ValueError("ROC-AUC requires one probability column per configured class")
+    if not torch.isfinite(y_true).all() or (y_true != y_true.long()).any():
+        raise ValueError("ROC-AUC targets must be finite integer class IDs")
+    y_true = y_true.long().to(probs.device)
+    if ((y_true < 0) | (y_true >= n_classes)).any():
+        raise ValueError("ROC-AUC target class is outside the configured range")
+    if not torch.isfinite(probs).all() or ((probs < 0) | (probs > 1)).any():
+        raise ValueError("ROC-AUC probabilities must be finite and within [0, 1]")
+    if not torch.allclose(probs.sum(dim=1), torch.ones(len(y_true), device=probs.device, dtype=probs.dtype), atol=1e-5, rtol=1e-5):
+        raise ValueError("ROC-AUC probabilities must sum to one across all configured outputs")
     counts = torch.bincount(y_true, minlength=n_classes)
-    if len(y_true) == 0 or (counts == 0).any() or (counts == len(y_true)).any():
-        return None
-    # Using 'macro' average and 'ovr' (One-vs-Rest) strategy
-    return float(tmf.auroc(y_pred_probs, y_true, task="multiclass", num_classes=n_classes, average="macro")) 
+    eligible = torch.where((counts > 0) & (counts < len(y_true)))[0].tolist()
+    details = {
+        "method": "macro_ovr_observed_classes",
+        "status": "defined" if eligible else ("empty_test_split" if len(y_true) == 0 else "insufficient_test_classes"),
+        "configured_classes": n_classes,
+        "evaluated_classes": eligible,
+        "class_counts": counts.tolist(),
+        "per_class_auc": [None] * n_classes,
+    }
+    if not eligible:
+        return None, details
+    for class_id in eligible:
+        score = float(tmf.auroc(probs[:, class_id], (y_true == class_id).long(), task="binary"))
+        if not math.isfinite(score):
+            raise ValueError(f"Nonfinite ROC-AUC calculation for class {class_id}")
+        details["per_class_auc"][class_id] = score
+    return math.fsum(details["per_class_auc"][c] for c in eligible) / len(eligible), details

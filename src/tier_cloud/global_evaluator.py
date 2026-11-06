@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Tuple, Dict, Any, Optional
 
@@ -5,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from src.shared.utils.metrics import accuracy, macro_f1, roc_auc_multiclass
+from src.shared.utils.metrics import accuracy, macro_f1, roc_auc_multiclass_details
 from src.shared.data.data_loader import get_dataset
 from src.shared.models.factory import get_model
 from src.shared.network.model_payload import load_model_arrays
@@ -107,19 +108,23 @@ class GlobalEvaluator:
         all_preds, all_targets, all_probs = torch.cat(all_preds), torch.cat(all_targets), torch.cat(all_probs)
         acc = accuracy(all_targets, all_preds)
         f1 = macro_f1(all_targets, all_preds, self.num_classes)
-        auc = roc_auc_multiclass(all_targets, all_probs, self.num_classes)
+        auc, auc_details = roc_auc_multiclass_details(all_targets, all_probs, self.num_classes)
 
         metrics = {
             "accuracy": acc,
             "macro_f1": f1,
             "auc_defined": auc is not None,
+            # Flower metrics accept scalars; Cloud writers restore the object.
+            "auc_details": json.dumps(auc_details, allow_nan=False),
         }
         if auc is not None:
             metrics["auc"] = auc
 
         self.logger.info(
             f"{self.tier.upper()} Eval Round {server_round} | "
-            f"Loss: {avg_loss:.4f} | Acc: {acc:.4f} | F1: {f1:.4f}"
+            f"Loss: {avg_loss:.4f} | Acc: {acc:.4f} | F1: {f1:.4f} | "
+            f"AUC: {auc if auc is not None else auc_details['status']} | "
+            f"AUC classes: {len(auc_details['evaluated_classes'])}/{self.num_classes}"
         )
 
         self.logger.info(

@@ -211,7 +211,7 @@ class EvaluationTests(unittest.TestCase):
         evaluator.test_loader = DataLoader(TensorDataset(torch.zeros(5, 2), torch.zeros(5, dtype=torch.long)), batch_size=2)
         return evaluator
 
-    def test_missing_classes_are_excluded_from_f1_and_auc_is_undefined(self):
+    def test_single_test_class_has_valid_f1_but_undefined_auc(self):
         evaluator = self.evaluator()
         arrays = parameters_to_ndarrays(encode_model(evaluator.model, 32))
         _, metrics = evaluator.evaluate(1, arrays, {})

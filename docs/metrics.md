@@ -81,7 +81,7 @@ Implementation: `GlobalEvaluator.evaluate()` and the shared metric functions; pe
 | Global classification accuracy | `performance[].global_accuracy` | Clean results in Table II; poisoning results in Tables III and VI; accuracy-based ablation and failure-mode results. | Implemented. The same collector supports different experiment conditions. |
 | Global evaluation loss | `performance[].global_loss` | Additional training-progress diagnostic; no corresponding headline loss result is reported. | Implemented. This is evaluation loss, not automatically local training loss. |
 | Global macro-F1 | `performance[].global_macro_f1` | Table II reports F1 without explicitly identifying the averaging convention. | Implemented; exact F1-definition parity with the article is unresolved. |
-| Global macro One-vs-Rest ROC-AUC | `roc_auc_multiclass()`; `performance[].global_auc` | AUC is reported in Section IX; its multiclass averaging convention is not specified. | Implemented; conditional on evaluation-class coverage. |
+| Global macro One-vs-Rest ROC-AUC | `roc_auc_multiclass_details()`; `performance[].global_auc` | AUC is reported in Section IX; its multiclass averaging convention is not specified. | Implemented local convention: unweighted mean over observed test classes, with coverage and per-class AUC. |
 | Accuracy, F1, and loss histories | Performance values indexed by `round` and `timestamp` | Accuracy histories support Figure 5; Figure 3 instead compares accuracy across poisoning configurations. F1 and loss histories add diagnostics. | Implemented; convergence summaries require post-processing. |
 
 Accuracy is evaluated against the ground-truth labels of the evaluation set. Poisoning the training process does not require poisoning the test labels or changing the accuracy formula.
@@ -104,11 +104,24 @@ Global loss is sample-weighted mean cross-entropy over the test split. Accuracy 
 
 #### AUC definition and undefined values
 
-`roc_auc_multiclass()` passes post-softmax class probabilities to multiclass AUROC with macro averaging. It returns `None` when the evaluation set is empty or any configured class lacks positive or negative examples. Unlike macro-F1, this AUC definition requires coverage of every configured class.
+`roc_auc_multiclass_details()` calculates **macro one-vs-rest ROC-AUC over observed test classes**. For each configured class with at least one positive and one negative test example, it calculates binary ROC-AUC from that class's probability column, then takes the unweighted mean of those class AUCs. Class eligibility depends only on true test labels, never on predictions. `roc_auc_multiclass()` exposes the same calculation as a scalar-or-`None` compatibility helper.
 
-The evaluator always returns `auc_defined` and includes `auc` only when defined. The cloud writer persists `metrics.get("auc")` as `global_auc`, so an undefined AUC becomes JSON `null`. It does not persist `auc_defined`, evaluation class counts, or an undefined-value reason alongside the round result.
+Softmax is computed over **all configured model outputs**. Neither the model head nor its output probabilities are resized or renormalized for the observed subset. The bundled Edge sample has ten observed classes (IDs 0–9) while the author-derived model retains fifteen outputs. Its AUC averages ten binary class AUCs; the five absent classes have undefined per-class AUC, not zero. When all fifteen classes occur in the test split, this procedure reduces to ordinary full-class macro OVR AUC.
 
-Prepared dataset manifests contain split sample counts and `class_counts`, including absent classes. Use their test-set counts to diagnose class coverage. AUC reason codes and direct links from each evaluation result to those counts remain an output gap.
+The evaluator returns scalar `auc_defined` and JSON-string `auc_details` (to respect Flower's scalar metric transport), and includes `auc` only when defined. Both Cloud writers save `global_auc`, `global_auc_defined`, and a decoded `global_auc_details` object each round, including initialization round 0. Its fields are:
+
+| Field within `global_auc_details` | Meaning |
+| --- | --- |
+| `method` | `macro_ovr_observed_classes`; explicitly identifies the averaging convention. |
+| `status` | `defined`, `empty_test_split`, or `insufficient_test_classes`. |
+| `configured_classes` | Number of model outputs, e.g. 15. |
+| `evaluated_classes` | IDs with both positive and negative test examples, e.g. 0–9; its length gives coverage, e.g. 10 of 15. |
+| `class_counts` | Counts indexed by configured class ID, including zeros; their sum is the test sample count. |
+| `per_class_auc` | AUC indexed by configured class ID; unsupported classes are JSON `null`. |
+
+Empty or single-class populations yield `None` from the helper; global evaluation rejects an empty test split before metric calculation. Invalid shapes, labels, probabilities, nonfinite results and calculation exceptions fail evaluation instead of silently excluding more classes. A callback that supplies no diagnostics produces null `global_auc_details`; no cause is inferred.
+
+This observed-class averaging is a disclosed local evaluation convention, not a claim about the authors' unspecified AUC method or their reported 0.989 value. Keep the test split fixed across rounds and compare runs with matching class coverage and evaluation populations. Historical results used the prior full-class requirement and are not rewritten; their null values cannot be reconstructed from accuracy/F1 alone. Prepared manifests also retain split class counts, although results do not yet link to a specific manifest identity.
 
 Both global evaluation and standalone checkpoint evaluation load the prepared test artifact through `get_dataset()`. `dataset_fraction` controls training partition sampling and also affects the fog validation sampling pool; it does not resample the global test split. Increasing that fraction does not by itself resolve missing test classes.
 
@@ -428,7 +441,7 @@ The article's theoretical security/detection bounds and estimates for future har
 
 | Item | Implementation behavior | Classification or action |
 | --- | --- | --- |
-| AUC availability explanation | The global result exports nullable `global_auc`, but omits `auc_defined` and an undefined-value reason. Dataset manifests contain test class counts. | Partial observability; expose the reason and link the evaluation population to its manifest. |
+| AUC availability explanation | New global results export observed-class macro AUC, its defined flag, method/status, evaluated IDs, actual test class counts and per-class AUC. Historical files lack these diagnostics. | Coverage is explicit; a direct manifest identity link remains absent. |
 | Macro-F1 class population | Classes absent from both targets and predictions are omitted; prediction-only classes remain. | Preserve this definition when comparing against fixed-class or differently averaged F1. |
 | SHAP-only false-positive rate | The update calculator pools stages; stage `shap` itself includes validation failures. | Generic honest-update rejection is implemented. A pure threshold FPR needs separate eligibility and rejection-cause fields. |
 | Authentication-event identity | Admission and returned-update checks use separate challenges; the summary pools both dictionaries without deduplication. | Counts are stage events, not unique clients or independent trials. Separate stage summaries are not exported. |

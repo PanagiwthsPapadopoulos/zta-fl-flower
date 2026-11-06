@@ -118,6 +118,8 @@ class CloudAggregator(GlobalModelState, FedAvg):
             "global_accuracy": metrics.get("accuracy"),
             "global_macro_f1": metrics.get("macro_f1"),
             "global_auc": metrics.get("auc"),
+            "global_auc_defined": metrics.get("auc_defined"),
+            "global_auc_details": json.loads(metrics["auc_details"]) if "auc_details" in metrics else None,
             "round_latency_total_sec": round_latency_total_sec,
             "payload_size_mb": payload_size_mb,
             "timestamp": datetime.now().isoformat()
