@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -165,7 +166,8 @@ def owned_processes(attempt):
                 env = (path / "environ").read_bytes().split(b"\0")
                 status = (path / "stat").read_text().rsplit(")", 1)[1].split()[0]
                 if marker.encode() in env and status != "Z":
-                    records.append({"pid": int(path.name), "command": (path / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")})
+                    argv = [arg.decode(errors="replace") for arg in (path / "cmdline").read_bytes().split(b"\0") if arg]
+                    records.append({"pid": int(path.name), "command": shlex.join(argv), "argv": argv})
             except (OSError, IndexError):
                 continue
     else:
@@ -212,12 +214,33 @@ class Runtime:
                 item["State"].get("Running") and not item["State"].get("OOMKilled")
                 and item.get("RestartCount", 0) == 0
                 and item["State"].get("Health", {}).get("Status", "healthy") == "healthy" for item in nodes))
-        try:
-            pids = {int(p) for p in (self.root / "runtime/infra/batch_tpm_pids").read_text().split()}
-        except (OSError, ValueError):
-            return False
-        alive = {p["pid"] for p in owned_processes(self.attempt)}
-        return len(pids) == sum(self.edges) and pids <= alive
+        # $! identifies the Apptainer launcher, which need not be the marked
+        # swtpm child. Validate owned services by their exact per-Edge endpoints.
+        expected = {f"edge_{i}_{j}" for i, count in enumerate(self.edges, 1)
+                    for j in range(1, count + 1)}
+        found = {edge: 0 for edge in expected}
+        for process in owned_processes(self.attempt):
+            try:
+                argv = process.get("argv") or shlex.split(process["command"])
+                if len(argv) < 2 or Path(argv[0]).name != "swtpm" or argv[1] != "socket":
+                    continue
+                state = argv[argv.index("--tpmstate") + 1]
+                server = argv[argv.index("--server") + 1]
+                control = argv[argv.index("--ctrl") + 1]
+            except (KeyError, ValueError, IndexError):
+                continue
+            edge = state.rsplit("/", 1)[-1]
+            base = f"/app/runtime/tpm_state/{edge}"
+            if (edge in expected and state == f"dir={base}"
+                    and server == f"type=unixio,path={base}/swtpm.sock"
+                    and control == f"type=unixio,path={base}/swtpm.sock.ctrl"):
+                found[edge] += 1
+        return bool(expected) and all(
+            found[edge] == 1
+            and (self.root / "runtime/tpm_state" / edge / "swtpm.sock").is_socket()
+            and (self.root / "runtime/tpm_state" / edge / "swtpm.sock.ctrl").is_socket()
+            for edge in expected
+        )
 
     def diagnostics(self, folder):
         atomic_json(folder / "processes.json", owned_processes(self.attempt))
@@ -481,8 +504,10 @@ def supervise(root, session, state):
                         outcome, reason = "BOOT_TIMEOUT", "Network readiness time limit exceeded"
                         break
                     if (root / "runtime/infra/.network_ready").exists():
-                        if not ledger_ready(root, entry["topology"]) or not runtime.healthy():
-                            raise BatchError("Boot signalled readiness with incomplete TPM provisioning or unhealthy processes")
+                        if not ledger_ready(root, entry["topology"]):
+                            raise BatchError("Boot signalled readiness with incomplete TPM provisioning")
+                        if not runtime.healthy():
+                            raise BatchError("Boot signalled readiness but runtime service health checks failed; see processes.json and runtime diagnostics")
                         update(phase="preparing")
                         launch = runtime.launch(root / f"scripts/simulation/deploy_code_sim_{state['runtime']}.sh", folder / "dispatch.log")
                         update(launcher_pid=launch.pid)

@@ -190,6 +190,8 @@ An arbitrary new JSON file, the appearance of a round number in a log, or succes
 
 The batch distinguishes `SUCCESS`, `CRASHED`, `INCOMPLETE`, `BOOT_TIMEOUT`, `PREPARATION_TIMEOUT`, `STALLED`, `SHUTDOWN_TIMEOUT`, `TIMEOUT`, `CANCELLED` and recovered `INTERRUPTED` attempts. Infrastructure health and unexpected container restarts are checked alongside process exit and explicit server exceptions.
 
+For Apptainer, health checks identify the live `swtpm` children carrying the current attempt marker. Every configured Edge must have exactly one such service with the expected state directory and server/control socket arguments, and both socket files must exist. The background Apptainer launcher PID recorded by the boot script is not assumed to equal the TPM child PID. Ledger completeness is checked separately during startup.
+
 | Limit | Default | Override, in seconds |
 | --- | --- | --- |
 | Network boot and complete TPM provisioning | 30 minutes | `--boot-timeout 1800` |

@@ -84,6 +84,56 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(entries[0]["configs"]["training.yaml"]["num_rounds"], 2)
         self.assertEqual(baseline, self.baseline)
 
+    def tpm_process(self, edge, pid):
+        base = f"/app/runtime/tpm_state/{edge}"
+        argv = ["/usr/bin/swtpm", "socket", "--tpmstate", f"dir={base}", "--tpm2",
+                "--server", f"type=unixio,path={base}/swtpm.sock",
+                "--ctrl", f"type=unixio,path={base}/swtpm.sock.ctrl", "--flags", "startup-clear"]
+        return {"pid": pid, "argv": argv, "command": " ".join(argv)}
+
+    def test_apptainer_health_accepts_100_owned_children_with_different_launcher_pids(self):
+        infra = self.root / "runtime/infra"
+        infra.mkdir()
+        (infra / "batch_tpm_pids").write_text("\n".join(str(i) for i in range(100)))
+        processes = [self.tpm_process(f"edge_{i}_{j}", 1000 + i * 10 + j)
+                     for i in range(1, 11) for j in range(1, 11)]
+        # The captured HPC diagnostic format did not yet include argv.
+        for process in processes:
+            del process["argv"]
+        processes.append({"pid": 2000, "command": "bash boot_network_sim_apptainer.sh"})
+        runtime = batch.Runtime(self.root, "apptainer", "this-attempt", [10] * 10)
+        with patch.object(batch, "owned_processes", return_value=processes) as owned, \
+             patch.object(Path, "is_socket", return_value=True):
+            self.assertTrue(runtime.healthy())
+        owned.assert_called_once_with("this-attempt")
+
+    def test_apptainer_health_rejects_missing_duplicate_and_wrong_endpoint_services(self):
+        runtime = batch.Runtime(self.root, "apptainer", "this-attempt", [2])
+        first, second = self.tpm_process("edge_1_1", 100), self.tpm_process("edge_1_2", 101)
+        malformed = {"pid": 102, "argv": ["swtpm", "socket", "--tpmstate"], "command": ""}
+        wrong = self.tpm_process("edge_1_2", 103)
+        wrong["argv"][6] = "type=unixio,path=/other/swtpm.sock"
+        for processes in ([first], [first, first], [first, second, second],
+                          [first, malformed], [first, wrong],
+                          [first, self.tpm_process("edge_9_9", 104)]):
+            with self.subTest(processes=processes), \
+                 patch.object(batch, "owned_processes", return_value=processes), \
+                 patch.object(Path, "is_socket", return_value=True):
+                self.assertFalse(runtime.healthy())
+
+    def test_apptainer_health_requires_both_socket_files_and_owned_services(self):
+        runtime = batch.Runtime(self.root, "apptainer", "this-attempt", [1])
+        process = self.tpm_process("edge_1_1", 100)
+        for missing in ("swtpm.sock", "swtpm.sock.ctrl"):
+            with self.subTest(missing=missing), \
+                 patch.object(batch, "owned_processes", return_value=[process]), \
+                 patch.object(Path, "is_socket", autospec=True, side_effect=lambda p: p.name != missing):
+                self.assertFalse(runtime.healthy())
+        # Socket files alone cannot make an unowned service healthy.
+        with patch.object(batch, "owned_processes", return_value=[]), \
+             patch.object(Path, "is_socket", return_value=True):
+            self.assertFalse(runtime.healthy())
+
     def test_unknown_keys_cross_file_keys_rounds_and_topology_are_rejected(self):
         for filename, override in (("training.yaml", {"learning_raet": .2}),
                                    ("security.yaml", {"num_rounds": 2}),
