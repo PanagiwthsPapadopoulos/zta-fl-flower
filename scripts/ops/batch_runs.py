@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.shared.utils.simulation_lifecycle import atomic_json, stamp
 from src.shared.utils.config_loader import get_round_timeout
+from scripts.ops.apptainer_lifecycle import (
+    LifecycleError, ProcessInventory, is_runtime, signal_payload,
+)
 
 CONFIG_FILES = ("network.yaml", "training.yaml", "security.yaml")
 
@@ -163,11 +166,13 @@ def owned_processes(attempt):
             try:
                 if path.stat().st_uid != os.getuid():
                     continue
+                before = (path / "stat").read_text().rsplit(")", 1)[1].split()
                 env = (path / "environ").read_bytes().split(b"\0")
-                status = (path / "stat").read_text().rsplit(")", 1)[1].split()[0]
-                if marker.encode() in env and status != "Z":
+                after = (path / "stat").read_text().rsplit(")", 1)[1].split()
+                if marker.encode() in env and after[0] != "Z" and before[19] == after[19]:
                     argv = [arg.decode(errors="replace") for arg in (path / "cmdline").read_bytes().split(b"\0") if arg]
-                    records.append({"pid": int(path.name), "command": shlex.join(argv), "argv": argv})
+                    records.append({"pid": int(path.name), "start_time": int(after[19]),
+                                    "command": shlex.join(argv), "argv": argv})
             except (OSError, IndexError):
                 continue
     else:
@@ -185,12 +190,23 @@ class Runtime:
     def __init__(self, root, backend, attempt, edges):
         self.root, self.backend, self.attempt, self.edges = root, backend, attempt, edges
         self.children = []
+        self.inventory = None
+
+    def observe(self):
+        marked = owned_processes(self.attempt)
+        if self.inventory is not None:
+            self.inventory.scan(marked)
+        return marked
 
     def containers(self, project=False):
         selector = "com.docker.compose.project=zta-fl" if project else f"zta.batch_attempt={self.attempt}"
         return require(command(["docker", "ps", "-aq", "--filter", f"label={selector}"])).split()
 
     def launch(self, script, log):
+        if self.backend == "apptainer" and self.inventory is None:
+            self.inventory = ProcessInventory(
+                self.root / "results" / self.attempt / "process_inventory.json", self.attempt)
+            self.inventory.begin()
         env = {**os.environ, "ZTA_BATCH_MANAGED": "1", "ZTA_BATCH_ATTEMPT": self.attempt,
                "APPTAINERENV_ZTA_BATCH_ATTEMPT": self.attempt,
                "ZTA_BATCH_PHASE_FILE": str(self.root / "runtime" / "batch_phase"),
@@ -200,6 +216,8 @@ class Runtime:
             child = subprocess.Popen(["bash", str(script)], cwd=self.root, env=env,
                                      stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
         self.children.append(child)
+        if self.inventory is not None:
+            self.inventory.remember(child.pid)
         return child
 
     def healthy(self):
@@ -219,7 +237,7 @@ class Runtime:
         expected = {f"edge_{i}_{j}" for i, count in enumerate(self.edges, 1)
                     for j in range(1, count + 1)}
         found = {edge: 0 for edge in expected}
-        for process in owned_processes(self.attempt):
+        for process in self.observe():
             try:
                 argv = process.get("argv") or shlex.split(process["command"])
                 if len(argv) < 2 or Path(argv[0]).name != "swtpm" or argv[1] != "socket":
@@ -243,7 +261,7 @@ class Runtime:
         )
 
     def diagnostics(self, folder):
-        atomic_json(folder / "processes.json", owned_processes(self.attempt))
+        atomic_json(folder / "processes.json", self.observe())
         records = {"version": command([self.backend, "--version"]),
                    "disk": command(["df", "-h", str(self.root)])}
         if shutil.which("nvidia-smi"):
@@ -259,6 +277,11 @@ class Runtime:
         atomic_json(folder / "runtime_diagnostics.json", records)
 
     def stop(self, grace):
+        if self.backend == "apptainer":
+            try:
+                return self.stop_apptainer(grace)
+            except (LifecycleError, OSError, ValueError, KeyError) as exc:
+                raise BatchError(str(exc)) from exc
         if self.backend == "docker" and set(self.containers(project=True)) - set(self.containers()):
             raise BatchError("Foreign containers in Compose project; refusing destructive cleanup")
         for record in owned_processes(self.attempt):
@@ -297,6 +320,48 @@ class Runtime:
             time.sleep(.2)
         if owned_processes(self.attempt):
             raise BatchError("Owned processes remain alive; refusing to start another run")
+
+    def stop_apptainer(self, grace):
+        if self.inventory is None:
+            self.inventory = ProcessInventory(
+                self.root / "results" / self.attempt / "process_inventory.json", self.attempt)
+        if not self.inventory.initialized:
+            # Recovery from old batches cannot manufacture a trustworthy baseline.
+            # No signals are sent on this path, even if a marker is still present.
+            self.inventory.assert_clean(owned_processes(self.attempt))
+            return
+        # Stop application processes first. Killing a starter/runtime parent can
+        # bypass Apptainer's unmount and FUSE-driver shutdown, even on success.
+        # Each phase discovers new children; helpers are NEVER directly signalled.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            sent = set()
+            deadline = time.monotonic() + grace
+            while True:
+                for child in self.children:
+                    child.poll()
+                marked = owned_processes(self.attempt)
+                owned, unknown, unreadable = self.inventory.scan(marked)
+                atomic_json(self.inventory.path.parent / "shutdown_processes.json", {
+                    "owned": owned, "unknown_helpers": unknown,
+                    "unreadable_pids": sorted(unreadable), "signal_phase": sig.name})
+                if not owned:
+                    break
+                for record in owned:
+                    key = (record["pid"], record["start_time"])
+                    if key not in sent and not is_runtime(record):
+                        signal_payload(record, sig)
+                        sent.add(key)
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(.2)
+            if not owned:
+                break
+        self.inventory.assert_clean(owned_processes(self.attempt))
+        for child in self.children:
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                raise BatchError("A supervised process did not exit") from exc
 
 
 def ledger_ready(root, edges):
@@ -437,6 +502,10 @@ def preflight(root, backend):
     else:
         if not Path("/proc").is_dir():
             raise BatchError("Apptainer batch supervision requires Linux /proc for owned-process cleanup")
+        if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+            raise BatchError("Apptainer batch supervision requires Python/Linux pidfd support")
+        # Check kernel support before starting any workload, not during teardown.
+        os.close(os.pidfd_open(os.getpid()))
         processes = require(command(["ps", "-u", str(os.getuid()), "-o", "args="]))
         if any(re.search(r"\b(swtpm|flwr-simulation|flwr run)\b", line) for line in processes.splitlines()):
             raise BatchError("Existing TPM/Flower processes detected; stop the standalone simulation first")
@@ -497,6 +566,8 @@ def supervise(root, session, state):
                 boot = runtime.launch(root / f"scripts/simulation/boot_network_sim_{state['runtime']}.sh", folder / "boot.log")
                 update(boot_pid=boot.pid)
                 while True:
+                    if state["runtime"] == "apptainer":
+                        runtime.observe()
                     if boot.poll() is not None:
                         raise BatchError(f"Network boot exited {boot.returncode}")
                     elapsed = time.monotonic() - start

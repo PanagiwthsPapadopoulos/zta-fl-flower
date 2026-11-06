@@ -213,6 +213,10 @@ python3 scripts/ops/batch_runs.py --runtime apptainer --stall-timeout 7200
 
 After a failed attempt, the runner captures diagnostics, stops only processes/containers identified as belonging to that attempt, archives its outputs, restores baseline configuration and proceeds to the next queued run. There are no automatic retries. A backup, configuration-restoration or cleanup failure halts the batch. If processes cannot be confirmed stopped, the active configuration remains in place for recovery instead of changing underneath them.
 
+Apptainer shutdown terminates application payloads first and leaves runtime parents and FUSE helpers alive to finish Apptainer's normal teardown. After `--shutdown-timeout`, only surviving owned payloads may be force-terminated; the runtime then gets another shutdown interval to finish. A remaining runtime/helper halts the batch rather than being killed to force the next experiment to start. Python and the Linux kernel must support pidfds; preflight checks this before launching work.
+
+Each Apptainer attempt saves `results/<attempt>/process_inventory.json`, recording PID/start-time identities and descendants, including helpers without the application environment marker. The inventory survives supervisor recovery. `shutdown_processes.json` records remaining owned processes and unexplained new FUSE helpers. New helpers outside the inventory block completion but are never signalled; helpers present before the attempt are not taken over. A concurrent unrelated container launch can therefore cause a conservative halt. Older interrupted batches without an inventory cannot be declared stopped while unexplained helpers remain. The boot launcher also checks its TPM child and applies a 60-second socket deadline per Edge (`ZTA_TPM_START_TIMEOUT`); it checks provisioning exit codes before declaring readiness.
+
 ## Preserved evidence
 
 Each invocation creates a separate folder under `results/batch_archives/`:

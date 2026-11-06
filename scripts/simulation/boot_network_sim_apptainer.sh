@@ -5,6 +5,7 @@
 #   Boots background swtpm daemons and provisions Zero-Trust
 #   TPM states for simulated Edge actors.
 # =========================================================
+set -eo pipefail
 
 # =========================================================
 # PRE-FLIGHT CHECKS
@@ -45,21 +46,31 @@ mkdir -p "$PROJECT_ROOT/runtime/infra" \
 chmod 777 "$LOCKS_DIR"
 
 PIDS=()
+INIT_PIDS=()
 if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
     : > "$PROJECT_ROOT/runtime/infra/batch_tpm_pids"
 fi
 
 cleanup() {
-    echo -e "\n  Caught Shutdown Signal (Ctrl+C / Ctrl+Z)! Shutting down the Apptainer Simulation Engine..."
-    for pid in "${PIDS[@]}"; do kill -9 "$pid" 2>/dev/null || true; done
+    local status=$?
+    trap - EXIT
+    trap '' SIGINT SIGTERM SIGTSTP
+    # The batch supervisor stops payloads and waits for Apptainer's own cleanup.
+    # Killing the launcher here can orphan the FUSE driver before it is unmounted.
     if [ "${ZTA_BATCH_MANAGED:-0}" != "1" ]; then
-        pkill -9 -f 'flwr run|flwr-simulation|flower-superlink|flower-supernode|flower-superexec' 2>/dev/null || true
+        # Use the live job table, not historical PIDs of reaped provisioning jobs.
+        local live_pids
+        live_pids=$(jobs -pr)
+        for pid in $live_pids; do kill -TERM "$pid" 2>/dev/null || true; done
+        for pid in $live_pids; do wait "$pid" 2>/dev/null || true; done
     fi
     rm -f "$PROJECT_ROOT/runtime/infra/.network_ready"
-    echo "  Teardown complete. Network is offline."
-    exit 0
+    exit "$status"
 }
-trap cleanup SIGINT SIGTERM SIGTSTP
+trap cleanup EXIT
+trap 'exit 130' SIGINT
+trap 'exit 143' SIGTERM
+trap 'exit 148' SIGTSTP
 
 if [ -L /etc/localtime ]; then
     HOST_TZ=$(readlink /etc/localtime | sed 's#^.*zoneinfo/##')
@@ -140,11 +151,17 @@ for i in $(seq 1 "$NUM_FOGS"); do
                     --flags startup-clear \
                     > "$LOG_DIR/system/edge_${i}_${j}_swtpm.log" 2>&1 &
             PIDS+=($!)
+            TPM_PID=$!
             if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
                 printf '%s\n' "${PIDS[${#PIDS[@]}-1]}" >> "$PROJECT_ROOT/runtime/infra/batch_tpm_pids"
             fi
 
+            SOCKET_DEADLINE=$((SECONDS + ${ZTA_TPM_START_TIMEOUT:-60}))
             while [ ! -S "$EDGE_TPM_DIR/swtpm.sock" ]; do
+                if ! kill -0 "$TPM_PID" 2>/dev/null || [ "$SECONDS" -ge "$SOCKET_DEADLINE" ]; then
+                    echo "FATAL: Edge ${i}_${j} TPM failed to become ready; see its swtpm log."
+                    exit 1
+                fi
                 sleep 0.5
             done
             sleep 1
@@ -154,7 +171,7 @@ for i in $(seq 1 "$NUM_FOGS"); do
                 --env TPM2TOOLS_TCTI="swtpm:path=${SOCK_PATH}" \
                 --bind "$PROJECT_ROOT/runtime/tpm_state:/app/runtime/tpm_state:rw" \
                 --bind "$PROJECT_ROOT:/app" \
-                "$IMAGE_DIR/edge_node.sif" bash -c "
+                "$IMAGE_DIR/edge_node.sif" bash -e -c "
                     tpm2_startup -c || true
                     PYTHONPATH=/app python3 -c \"
 import logging
@@ -166,7 +183,18 @@ tpm.generate_attestation_token(nonce='FACTORY_BOOT_NONCE', software_label='[EDGE
 \"
                     echo 'TPM ready'
                 " > "$LOG_DIR/system/edge_${i}_${j}_init.log" 2>&1 &
+            INIT_PIDS+=($!)
+            PIDS+=($!)
         done
+    fi
+done
+
+# Do not declare readiness while a provisioning command failed or is still live.
+# Managed runs also have the supervisor's total boot deadline.
+for pid in "${INIT_PIDS[@]}"; do
+    if ! wait "$pid"; then
+        echo "FATAL: TPM provisioning failed; see the per-Edge init logs."
+        exit 1
     fi
 done
 
