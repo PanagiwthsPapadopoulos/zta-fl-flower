@@ -82,6 +82,7 @@ class ProcessInventory:
         self.path, self.attempt = Path(path), attempt
         self.known = {}
         self.baseline_helpers = set()
+        self.baseline_unreadable = set()
         self.initialized = False
         if self.path.exists():
             state = json.loads(self.path.read_text())
@@ -89,19 +90,23 @@ class ProcessInventory:
                 raise LifecycleError("Process inventory belongs to another attempt")
             self.known = {r["pid"]: r for r in state["processes"]}
             self.baseline_helpers = {tuple(key) for key in state["baseline_helpers"]}
+            self.baseline_unreadable = set(state.get("baseline_unreadable", []))
             self.initialized = True
 
     def save(self):
         atomic_json(self.path, {"attempt": self.attempt,
                               "baseline_helpers": sorted(self.baseline_helpers),
+                              "baseline_unreadable": sorted(self.baseline_unreadable),
                               "processes": list(self.known.values())})
 
     def begin(self):
         """Persist the baseline BEFORE the first launcher can create helpers."""
         if not self.initialized:
             records, unreadable = snapshot()
-            if unreadable:
-                raise LifecycleError("Cannot establish a complete process baseline")
+            # /proc is node-wide, not attempt-scoped. Restricted unrelated PIDs
+            # must not prevent startup on shared HPC nodes. Retain the observation
+            # for diagnostics; scan() remains strict for known/marked processes.
+            self.baseline_unreadable = unreadable
             self.baseline_helpers = {identity(r) for r in records.values() if is_helper(r)}
             self.initialized = True
             self.save()
@@ -117,8 +122,11 @@ class ProcessInventory:
 
     def scan(self, marked):
         records, unreadable = snapshot()
-        if unreadable & self.known.keys():
-            raise LifecycleError("Cannot inspect a previously owned process; shutdown is unconfirmed")
+        required = self.known.keys() | {r["pid"] for r in marked}
+        if unreadable & required:
+            raise LifecycleError(
+                f"Cannot inspect owned/marked PIDs {sorted(unreadable & required)}; "
+                "shutdown is unconfirmed")
         owned = {pid for pid, record in records.items()
                  if pid in self.known and identity(record) == identity(self.known[pid])}
         # Markers are read afresh by the caller. Recheck birth identity when supplied.
@@ -146,8 +154,10 @@ class ProcessInventory:
 
     def assert_clean(self, marked):
         owned, unknown, unreadable = self.scan(marked)
-        if owned or unknown or unreadable:
+        # Unrelated inaccessible PIDs are diagnostic observations, not evidence
+        # of a surviving attempt. Owned/marked unreadable PIDs fail in scan().
+        if owned or unknown:
             raise LifecycleError(
                 f"Apptainer shutdown unconfirmed: {len(owned)} owned processes, "
-                f"{len(unknown)} unexplained new FUSE helpers, {len(unreadable)} unreadable processes; "
+                f"{len(unknown)} unexplained new FUSE helpers; "
                 "preserving outputs and refusing the next experiment")

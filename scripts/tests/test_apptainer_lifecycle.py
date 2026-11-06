@@ -81,6 +81,31 @@ class ApptainerLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(lifecycle.LifecycleError, "Cannot inspect"):
             self.scan([], unreadable=[10])
 
+    def test_unrelated_unreadable_process_does_not_block_startup_or_shutdown(self):
+        with patch.object(lifecycle, "snapshot", return_value=({}, {900})):
+            self.inventory.begin()
+            self.inventory.assert_clean([])
+        recovered = lifecycle.ProcessInventory(self.path, "attempt")
+        self.assertEqual(recovered.baseline_unreadable, {900})
+        # A newly inaccessible unrelated process is not ours either.
+        with patch.object(lifecycle, "snapshot", return_value=({}, {900, 901})):
+            recovered.assert_clean([])
+
+    def test_newly_marked_unreadable_process_still_blocks_cleanup(self):
+        self.begin()
+        with self.assertRaisesRegex(lifecycle.LifecycleError, "owned/marked PIDs"):
+            self.scan([], marked=[process(10)], unreadable=[10])
+
+    def test_recovery_of_baseline_failure_ignores_unrelated_unreadable_pid(self):
+        # The reported failure happened before Popen and before an inventory was
+        # saved. Recovery must be able to confirm this attempt has no processes.
+        rt = batch.Runtime(self.root, "apptainer", "attempt", [1])
+        with patch.object(lifecycle, "snapshot", return_value=({}, {900})), \
+             patch.object(batch, "owned_processes", return_value=[]), \
+             patch.object(batch, "signal_payload") as send:
+            rt.stop(.1)
+        send.assert_not_called()
+
     def test_pidfd_revalidation_skips_reused_pid_and_runtime(self):
         original = process(10)
         for current in (process(10, start=999), process(10, "starter")):
