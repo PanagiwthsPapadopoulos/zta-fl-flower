@@ -291,6 +291,88 @@ class BatchTests(unittest.TestCase):
                 with batch.batch_lock(self.root / "lock"):
                     self.fail("lock should be exclusive")
 
+    def test_resume_retry_recovers_and_preserves_interrupted_attempt(self):
+        session, state = self.state()
+        state["runs"][0].update(status="RUNNING", attempt="old", completed_round=1)
+        state["active"] = 0
+        old = session / "attempts/old"
+        old.mkdir(parents=True)
+        (old / "boot.log").write_text("original boot evidence")
+        atomic_json(session / "batch.json", state)
+        with patch.object(batch, "ROOT", self.root), patch.object(batch, "Runtime", FakeRuntime), \
+             patch.object(batch, "preflight"), patch.object(batch, "watch", return_value=("SUCCESS", "done")), redirect_stdout(io.StringIO()):
+            self.assertEqual(batch.main(["--resume", str(session), "--retry-interrupted"]), 0)
+        final = batch.read_json(session / "batch.json")
+        self.assertEqual([r["status"] for r in final["runs"]], ["SUCCESS", "SUCCESS"])
+        first = final["runs"][0]
+        self.assertNotEqual(first["attempt"], "old")
+        self.assertEqual(first["completed_round"], -1)  # Fake watch never advances it.
+        self.assertEqual(first["previous_attempts"][0]["completed_round"], 1)
+        self.assertEqual(first["previous_attempts"][0]["status"], "INTERRUPTED")
+        self.assertEqual(batch.read_json(old / "status.json")["status"], "INTERRUPTED")
+        self.assertEqual((old / "boot.log").read_text(), "original boot evidence")
+        self.assertEqual(len(list((session / "attempts").iterdir())), 3)
+
+    def test_retry_cancelled_retains_history_and_never_requeues_other_outcomes(self):
+        session, state = self.state()
+        state["runs"][0].update(status="CANCELLED", attempt="cancelled", completed_round=1,
+                                previous_attempts=[{"attempt": "earlier", "status": "INTERRUPTED"}])
+        state["runs"][1].update(status="SUCCESS", attempt="success")
+        failed = json.loads(json.dumps(state["runs"][1]))
+        failed.update(status="CRASHED", attempt="failed")
+        state["runs"].append(failed)
+        atomic_json(session / "batch.json", state)
+        with patch.object(batch, "ROOT", self.root), patch.object(batch, "Runtime", FakeRuntime), \
+             patch.object(batch, "preflight"), patch.object(batch, "watch", return_value=("SUCCESS", "done")) as watch, redirect_stdout(io.StringIO()):
+            self.assertEqual(batch.main(["--resume", str(session), "--retry-interrupted"]), 1)
+        watch.assert_called_once()
+        final = batch.read_json(session / "batch.json")
+        self.assertEqual([r["status"] for r in final["runs"]], ["SUCCESS", "SUCCESS", "CRASHED"])
+        self.assertEqual([r["attempt"] for r in final["runs"][0]["previous_attempts"]], ["earlier", "cancelled"])
+        self.assertEqual(final["runs"][1]["attempt"], "success")
+
+    def test_explicit_skip_leaves_cancelled_entry_untouched(self):
+        session, state = self.state()
+        state["runs"][0].update(status="CANCELLED", attempt="cancelled")
+        atomic_json(session / "batch.json", state)
+        with patch.object(batch, "ROOT", self.root), patch.object(batch, "Runtime", FakeRuntime), \
+             patch.object(batch, "preflight"), patch.object(batch, "watch", return_value=("SUCCESS", "done")), redirect_stdout(io.StringIO()):
+            self.assertEqual(batch.main(["--resume", str(session), "--skip-interrupted"]), 1)
+        final = batch.read_json(session / "batch.json")
+        self.assertEqual([r["status"] for r in final["runs"]], ["CANCELLED", "SUCCESS"])
+
+    def test_retry_dry_run_projects_recovery_without_mutation(self):
+        session, state = self.state()
+        state["runs"][0].update(status="RUNNING", attempt="old")
+        state["active"] = 0
+        atomic_json(session / "batch.json", state)
+        before = (session / "batch.json").read_bytes()
+        output = io.StringIO()
+        with patch.object(batch, "ROOT", self.root), patch.object(batch, "Runtime", side_effect=AssertionError("no runtime")), redirect_stdout(output):
+            self.assertEqual(batch.main(["--resume", str(session), "--retry-interrupted", "--dry-run"]), 0)
+        self.assertEqual((session / "batch.json").read_bytes(), before)
+        self.assertEqual(json.loads(output.getvalue())["runs"][0]["status"], "PENDING")
+
+    def test_retry_cannot_bypass_source_check_or_failed_recovery(self):
+        for failure in ("source", "cleanup"):
+            with self.subTest(failure=failure):
+                # Each subcase uses the same untouched saved active attempt.
+                session = self.root / "results/batch_archives/blocked"
+                session.mkdir(parents=True, exist_ok=True)
+                _, runs = batch.plan_queue(self.root, self.queue)
+                runs[0].update(status="RUNNING", attempt="old")
+                state = dict(runtime="docker", limits=LIMITS, runs=runs, active=0,
+                             source_fingerprint={"different": "revision"})
+                atomic_json(session / "batch.json", state)
+                with patch.object(batch, "ROOT", self.root), patch.object(batch, "Runtime", FakeRuntime), \
+                     patch.object(batch, "archive"), patch.object(batch, "restore_config"), \
+                     patch.object(FakeRuntime, "stop", side_effect=batch.BatchError("cleanup failed") if failure == "cleanup" else None), \
+                     patch.object(batch, "supervise") as supervise, redirect_stdout(io.StringIO()):
+                    self.assertEqual(batch.main(["--resume", str(session), "--retry-interrupted"]), 2)
+                supervise.assert_not_called()
+                final = batch.read_json(session / "batch.json")
+                self.assertEqual(final["runs"][0]["status"], "RUNNING" if failure == "cleanup" else "INTERRUPTED")
+
     def test_archive_failure_halts_queue_after_stopping_and_restores_configs(self):
         session, state = self.state()
         with patch.object(batch, "Runtime", FakeRuntime), patch.object(batch, "watch", return_value=("SUCCESS", "done")), \

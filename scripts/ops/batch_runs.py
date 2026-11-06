@@ -546,16 +546,38 @@ def positive(value):
     return number
 
 
+def retry_interrupted(state):
+    """Requeue interrupted/cancelled entries while retaining their attempt history."""
+    plan_keys = {"name", "configs", "overrides", "target_rounds", "topology"}
+    for entry in state["runs"]:
+        if entry["status"] not in {"INTERRUPTED", "CANCELLED"}:
+            continue
+        history = entry.get("previous_attempts", []) + [
+            {key: value for key, value in entry.items()
+             if key not in plan_keys and key != "previous_attempts"}
+        ]
+        plan = {key: entry[key] for key in plan_keys}
+        entry.clear()
+        entry.update(plan, status="PENDING", previous_attempts=history)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime", choices=("docker", "apptainer"))
     parser.add_argument("--queue", type=Path, default=ROOT / "experiments_queue")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print the plan without starting or changing anything")
     parser.add_argument("--resume", type=Path, help="Resume pending entries; completed attempts are never rerun")
+    recovery_policy = parser.add_mutually_exclusive_group()
+    recovery_policy.add_argument("--retry-interrupted", action="store_true",
+                                 help="With --resume, restart INTERRUPTED/CANCELLED entries from round 1 as new attempts")
+    recovery_policy.add_argument("--skip-interrupted", action="store_true",
+                                 help="With --resume, skip INTERRUPTED/CANCELLED entries (default)")
     for flag, default in (("boot-timeout", 1800), ("prepare-timeout", 7200), ("stall-timeout", 3600),
                           ("run-timeout", 25200), ("shutdown-timeout", 120), ("poll-interval", 5)):
         parser.add_argument("--" + flag, type=positive, default=default)
     args = parser.parse_args(argv)
+    if (args.retry_interrupted or args.skip_interrupted) and not args.resume:
+        parser.error("--retry-interrupted and --skip-interrupted require --resume")
     archives = (ROOT / "results/batch_archives").resolve()
     try:
         if args.resume:
@@ -575,6 +597,12 @@ def main(argv=None):
                      "source_fingerprint": fingerprint(ROOT)}
             session = archives / f"{datetime.now(timezone.utc):%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}"
         if args.dry_run:
+            if args.resume and args.retry_interrupted:
+                # Preview recovery without touching the journal or live processes.
+                if state["active"] is not None:
+                    state["runs"][state["active"]]["status"] = "INTERRUPTED"
+                    state["active"] = None
+                retry_interrupted(state)
             print(json.dumps(state, indent=2))
             return 0
         with batch_lock(archives / ".supervisor.lock"):
@@ -601,6 +629,10 @@ def main(argv=None):
                 if fingerprint(ROOT) != state["source_fingerprint"]:
                     raise BatchError("Source differs from the saved batch. Recovery is complete; start a new batch for the new revision.")
             preflight(ROOT, state["runtime"])
+            if args.resume and args.retry_interrupted:
+                # Only requeue after recovery, source validation and preflight succeed.
+                retry_interrupted(state)
+                atomic_json(session / "batch.json", state)
             if not args.resume:
                 session.mkdir(parents=True)
                 shutil.copytree(ROOT / "config", session / "baseline_config")

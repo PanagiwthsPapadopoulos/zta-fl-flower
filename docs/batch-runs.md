@@ -260,9 +260,25 @@ Resume the saved batch explicitly:
 python3 scripts/ops/batch_runs.py --resume results/batch_archives/<batch-id>
 ```
 
-Resume uses its saved backend, configuration plan and time limits. It recovers any unfinished attempt first and marks that attempt `INTERRUPTED`, then runs only `PENDING` entries. Successful, failed and cancelled attempts are not retried. To repeat a failed experiment, include it in a new batch. Recovery diagnostics are kept separately from earlier diagnostics.
+Resume uses its saved backend, configuration plan and time limits. It recovers any unfinished attempt first and marks that attempt `INTERRUPTED`, then runs only `PENDING` entries by default. Recovery diagnostics are kept separately from earlier diagnostics.
 
-Source changes prevent continuing pending entries with a different implementation; recovery of the old active attempt is still performed before stopping. Start a new batch for the new source revision. A new invocation will refuse to ignore an unfinished attempt identified by the workspace journal. The old script's name-only `batch_status.log` is not used to skip runs.
+To restart interrupted experiments, including attempts cancelled with Ctrl+C or SIGTERM, use:
+
+```sh
+python3 scripts/ops/batch_runs.py --resume results/batch_archives/<batch-id> --retry-interrupted
+```
+
+This requeues all `INTERRUPTED` and `CANCELLED` entries in their original queue order alongside pending experiments. Each retry starts training from round 1 with a new attempt ID; it does not load the interrupted model checkpoint. Earlier attempt directories, logs and results remain intact. The queue entry's `previous_attempts` list retains earlier attempt IDs, outcomes and recorded progress, while its current status describes the latest attempt. A successful retry resolves that queue entry for the batch exit code. There is no automatic retry loop: if the new attempt fails, normal failure handling applies.
+
+To explicitly skip interrupted/cancelled experiments and continue only pending entries:
+
+```sh
+python3 scripts/ops/batch_runs.py --resume results/batch_archives/<batch-id> --skip-interrupted
+```
+
+Skipping is also the default when neither flag is supplied. The flags are mutually exclusive and require `--resume`. Add `--dry-run` to preview which entries would be requeued without recovering processes or modifying saved files; a preview does not establish that recovery or source validation will succeed. Successful experiments and other failures such as `CRASHED`, `STALLED` or `TIMEOUT` are never requeued by this option; repeat those using a new batch. Retrying runs only after unfinished-attempt recovery, source validation and runtime preflight succeed.
+
+Source changes prevent continuing pending entries with a different implementation; recovery of the old active attempt is still performed before stopping. This check also applies to `--retry-interrupted`, including batches created before this option was added. Start a new batch for the new source revision. A new invocation will refuse to ignore an unfinished attempt identified by the workspace journal. The old script's name-only `batch_status.log` is not used to skip runs.
 
 Exit codes: `0` means every queued attempt succeeded; `1` means at least one attempt failed/interrupted; `2` means validation or safe continuation failed; `130` means cancellation. Consult `batch.json` and per-attempt `status.json` for details.
 
