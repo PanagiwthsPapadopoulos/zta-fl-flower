@@ -303,3 +303,43 @@ python3 -B scripts/tests/run_tests.py --pattern 'test_batch*.py' --report script
 ```
 
 Tests cover independent config overlays, exact completion requirements, crashes, deadlines, log noise, cancellation, archival failure, exclusive locking and interrupted-run recovery. Actual launcher scripts execute against recording Docker/Apptainer CLI stubs to check foreground exit propagation and preservation of diagnostics. Integration tests exercise the real server-call boundary and checkpoint saver with controlled training results. These tests do not launch live containers or constitute an overnight hardware/runtime validation.
+
+
+## Simulation reliability and HPC diagnostics
+
+Apptainer batches reserve GPU resources for CUDA Ray clients (one whole GPU per
+worker by default), while retaining the full configured client population.
+Deployment lock files and security thresholds are unchanged. A CUDA memory
+failure gets one complete CPU retry from the original round parameters. Missing
+responses or execution failures fail the simulation round instead of silently
+aggregating a partial execution. Security rejections still follow the normal
+attestation, SHAP, and TrustDB rules.
+
+Simulation uses a minimum 120-second attestation freshness window;
+`simulation_tpm_freshness_window` can increase it. Post-training freshness is
+checked at the coordinator-recorded response arrival time, so waiting for other
+virtual clients does not expire an already-received quote. Signature, nonce, PCR,
+identity, stale-on-arrival, and future-date checks remain active. Deployment
+continues to use its existing current-time verification.
+
+Managed Apptainer Flower and Ray state is placed in a private node-local
+`zta-sim-*` directory. Selection tries `ZTA_SIM_SCRATCH_BASE`, `SLURM_TMPDIR`,
+`TMPDIR`, then `/tmp`, rejecting unverified/shared filesystems on Linux. The path
+is recorded in `runtime/batch/local_runtime.json`. After confirmed shutdown, its
+regular files are archived under the attempt's `local_scratch` directory and the
+owned scratch directory is removed. Unconfirmed shutdown preserves it for
+recovery. Do not delete its marker to bypass recovery.
+
+Run the following on the HPC node where the simulation ran, from the updated
+checkout (host Python needs only its standard library):
+
+```bash
+python3 scripts/ops/collect_simulation_diagnostics.py
+```
+
+This locates current and recently archived logs, node-local state, and Slurm
+allocation details automatically. It prints the path to a `.tar.gz` under
+`results/` to download. It does not stop jobs or delete files. Missing logs are
+recorded in `allocation_and_locations.json`; files collected from live processes
+may still be changing. Node-local files from a deleted instance cannot be
+recovered by this command.

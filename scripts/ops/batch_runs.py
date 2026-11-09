@@ -29,8 +29,9 @@ sys.path.insert(0, str(ROOT))
 from src.shared.utils.simulation_lifecycle import atomic_json, stamp
 from src.shared.utils.config_loader import get_round_timeout
 from scripts.ops.apptainer_lifecycle import (
-    LifecycleError, ProcessInventory, is_runtime, signal_payload,
+    LifecycleError, ProcessInspectionError, ProcessInventory, is_runtime, signal_payload,
 )
+from scripts.ops.simulation_scratch import prepare as prepare_scratch, archive_scratch, flower_status
 
 CONFIG_FILES = ("network.yaml", "training.yaml", "security.yaml")
 
@@ -212,6 +213,8 @@ class Runtime:
                "ZTA_BATCH_PHASE_FILE": str(self.root / "runtime" / "batch_phase"),
                "PROJECT_ROOT": str(self.root), "CONFIG_PATH": str(self.root / "config")}
         env["APPTAINERENV_CONFIG_PATH"] = "/app/config"
+        if self.backend == "apptainer" and script.name == "deploy_code_sim_apptainer.sh":
+            env["ZTA_SIM_RUNTIME_DIR"] = str(prepare_scratch(self.root, self.attempt))
         with log.open("wb") as handle:
             child = subprocess.Popen(["bash", str(script)], cwd=self.root, env=env,
                                      stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
@@ -340,7 +343,13 @@ class Runtime:
                 for child in self.children:
                     child.poll()
                 marked = owned_processes(self.attempt)
-                owned, unknown, unreadable = self.inventory.scan(marked)
+                try:
+                    owned, unknown, unreadable = self.inventory.scan(marked)
+                except ProcessInspectionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(.2)
+                    continue
                 atomic_json(self.inventory.path.parent / "shutdown_processes.json", {
                     "owned": owned, "unknown_helpers": unknown,
                     "unreadable_pids": sorted(unreadable), "signal_phase": sig.name})
@@ -412,6 +421,11 @@ def watch(root, runtime, boot, launch, entry, limits, start, update, sleep=time.
         if code is not None:
             if code == 0 and complete(root, runtime.attempt, entry["target_rounds"]):
                 return "SUCCESS", "ServerApp completed, all requested rounds and checkpoint saved, launcher exited 0"
+            terminal = flower_status(root, runtime.attempt)
+            if terminal:
+                atomic_json(root / "results" / runtime.attempt / "flower_status.json", terminal)
+                if terminal.get("status") == "failed":
+                    return "CRASHED", f"Flower task failed: {terminal.get('details')}; launcher exited {code}"
             return "CRASHED" if code else "INCOMPLETE", f"Launcher exited {code}; completion requirements were not met"
         number = progress(root, runtime.attempt)
         if number > best:
@@ -451,6 +465,8 @@ def restore_config(root, baseline_folder):
 
 
 def archive(root, folder, attempt, configs):
+    # Called only after confirmed process shutdown; failed copies retain scratch.
+    archive_scratch(root, folder, attempt)
     output = root / "results" / attempt
     if output.exists():
         shutil.copytree(output, folder / "results", dirs_exist_ok=True)
@@ -607,6 +623,12 @@ def supervise(root, session, state):
                         raise BatchError(f"Diagnostic collection failed: {diagnostic_error}")
                 except Exception as exc:
                     cleanup_error = str(exc)
+                    atomic_json(folder / "preserved_paths.json", {
+                        "note": "Shutdown/archive failed; these original paths were preserved, not moved.",
+                        "logs": str(root / "logs"), "runtime": str(root / "runtime/batch"),
+                        "scratch_marker": read_json(root / "runtime/batch/local_runtime.json"),
+                        "results": str(root / "results" / attempt),
+                    })
                 finally:
                     if stopped:
                         try:

@@ -13,9 +13,9 @@ class TrackedServerApp(ServerApp):
     def __call__(self, grid, context):
         if str(context.run_config.get("mode", "deploy")).lower() != "sim":
             return super().__call__(grid, context)
-        from src.shared.utils.config_loader import get_merged_config
+        from src.shared.utils.simulation_resources import simulation_config
         from src.shared.utils.simulation_lifecycle import track_simulation
-        with track_simulation(get_merged_config(context.run_config), context.run_config):
+        with track_simulation(simulation_config(context.run_config), context.run_config):
             return super().__call__(grid, context)
 
 

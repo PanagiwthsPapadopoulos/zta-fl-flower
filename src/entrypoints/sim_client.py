@@ -5,6 +5,7 @@ import ast
 import os
 import time
 import traceback
+import gc
 import torch
 import json
 from torch.utils.data import DataLoader, TensorDataset
@@ -66,7 +67,26 @@ class Client(NumPyClient):
             
             # Track Local Execution Timestamps & Latency
             train_start_unix = time.time()
-            res_params, num_examples, metrics = self.trainer.execute_training(parameters, current_round, config)
+            retried_on_cpu = False
+            try:
+                result = self.trainer.execute_training(parameters, current_round, config)
+            except torch.OutOfMemoryError:
+                if self.device != "cuda":
+                    raise
+                self.logger.warning("CUDA memory exhausted; retrying this client's complete update on CPU",
+                                    extra={"round": current_round})
+                retried_on_cpu = True
+            if retried_on_cpu:
+                # Leave the except block first so its traceback releases GPU tensors.
+                self.model.to("cpu")
+                self.device = self.trainer.device = "cpu"
+                gc.collect()
+                torch.cuda.empty_cache()
+                # execute_training reloads the original global parameters, resets the
+                # training seed, and generates the normal post-training TPM quote.
+                result = self.trainer.execute_training(parameters, current_round, config)
+            res_params, num_examples, metrics = result
+            metrics["simulation_cpu_retry"] = retried_on_cpu
             train_end_unix = time.time()
             
             metrics.setdefault("local_adversarial_training_start_unix", train_start_unix)
@@ -81,8 +101,8 @@ class Client(NumPyClient):
             return res_params, num_examples, metrics
             
         except Exception as e:
-            self.logger.error(f"{self.log_prefix} CRITICAL SILENT CRASH: {e}\n{traceback.format_exc()}", extra={"round": current_round})
-            return [], 0, {"status": "crashed"}
+            self.logger.error(f"{self.log_prefix} Simulation client failed: {e}\n{traceback.format_exc()}", extra={"round": current_round})
+            raise
 
     def evaluate(self, parameters: list, config: dict):
         if not hasattr(self, "trainer"):
@@ -91,8 +111,8 @@ class Client(NumPyClient):
 
 
 def client_fn(context: Context):
-    from src.shared.utils.config_loader import get_merged_config
-    run_config = get_merged_config(context.run_config)
+    from src.shared.utils.simulation_resources import simulation_config
+    run_config = simulation_config(context.run_config)
     node_config = context.node_config
     device = get_device(tier="edge")
     

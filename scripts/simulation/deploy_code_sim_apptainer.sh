@@ -19,11 +19,11 @@ PATCH_FILE=/tmp/tpm_socket_patch.py
 EXTRA_ARGS=()
 if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
     mkdir -p "$PROJECT_ROOT/runtime/batch"
-    FLWR_TMP_HOME="$PROJECT_ROOT/runtime/batch/flower"
+    FLWR_TMP_HOME="/zta-sim-runtime/flower"
     MANIFEST_FILE="$PROJECT_ROOT/runtime/batch/pyproject.cloud.toml"
     PATCH_FILE="$PROJECT_ROOT/runtime/batch/tpm_socket_patch.py"
-    EXTRA_ARGS=(--bind "$PROJECT_ROOT/runtime/batch:$PROJECT_ROOT/runtime/batch"
-        --env "RAY_TMPDIR=/app/runtime/batch/ray"
+    EXTRA_ARGS=(--bind "${ZTA_SIM_RUNTIME_DIR:?Batch did not allocate node-local runtime}:/zta-sim-runtime"
+        --env "RAY_TMPDIR=/zta-sim-runtime/ray"
         --env "ZTA_BATCH_ATTEMPT=$ZTA_BATCH_ATTEMPT")
     printf 'preparing\n' > "$ZTA_BATCH_PHASE_FILE"
 fi
@@ -176,8 +176,12 @@ echo "  Copying application manifest; simulation node count is passed explicitly
 cp "$TEMPLATE" "$MANIFEST_FILE"
 
 # Pre-create FLWR_HOME/config.toml
-mkdir -p "$FLWR_TMP_HOME"
-cat <<EOF > "$FLWR_TMP_HOME/config.toml"
+FLWR_HOST_HOME="$FLWR_TMP_HOME"
+if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
+    FLWR_HOST_HOME="$ZTA_SIM_RUNTIME_DIR/flower"
+fi
+mkdir -p "$FLWR_HOST_HOME"
+cat <<EOF > "$FLWR_HOST_HOME/config.toml"
 [superlink]
 default = "local"
 
@@ -229,7 +233,7 @@ apptainer exec --writable-tmpfs $GPU_ARGS ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} --
     --env TORCH_NUM_THREADS=1 \
     --env RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 \
     --env RAY_INCLUDE_DASHBOARD=0 \
-    --env RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0 \
+    --env RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=1 \
     --bind "$PROJECT_ROOT:/app" \
     --bind "$LOG_DIR/nodes/cloud:/app/logs" \
     --bind "$LOG_DIR/system:/app/logs/system" \
@@ -246,22 +250,7 @@ apptainer exec --writable-tmpfs $GPU_ARGS ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} --
         sed -i "s/dashboard_process\.children()/()/g" /python/venv/lib/python3.13/site-packages/ray/_private/node.py
         sed -i "s/raise AccessDenied(pid) from err/pass/g" /python/venv/lib/python3.13/site-packages/ray/thirdparty_files/psutil/_pslinux.py
 
-        FED_CFG=$(/python/venv/bin/python3 -c "
-import os, tomllib, pathlib
-data = tomllib.loads(pathlib.Path(\"/app/pyproject.toml\").read_text())
-local = data.get(\"tool\", {}).get(\"flwr\", {}).get(\"federations\", {}).get(\"local\", {})
-opts = local.get(\"options\", local)
-backend = opts.get(\"backend\", {})
-cres = backend.get(\"client-resources\", opts.get(\"client-resources\", {}))
-iargs = backend.get(\"init-args\", opts.get(\"init-args\", {}))
-cfg = [\"num-supernodes=\" + str(int(os.environ[\"N_SIM\"]))]
-if \"num-cpus\" in cres: cfg.append(f\"client-resources-num-cpus={cres['\''num-cpus'\'']}\")
-if \"num-gpus\" in cres: cfg.append(f\"client-resources-num-gpus={cres['\''num-gpus'\'']}\")
-if \"num-cpus\" in iargs: cfg.append(f\"init-args-num-cpus={iargs['\''num-cpus'\'']}\")
-if \"num-gpus\" in iargs: cfg.append(f\"init-args-num-gpus={iargs['\''num-gpus'\'']}\")
-if \"verbose\" in opts: cfg.append(f\"verbose={str(opts['\''verbose'\'']).lower()}\")
-print(\" \".join(cfg))
-")
+        FED_CFG=$(/python/venv/bin/python3 -m src.shared.utils.simulation_resources)
         echo "PATCH: Ray, psutil, and dynamic TPM UNIX socket routing applied successfully."
         echo "CONFIG: Loaded federation config from pyproject.toml -> ${FED_CFG}"
         /python/venv/bin/flwr run /app local --stream --run-config "mode=\"sim\" tier=\"cloud\" min_clients=${N_SIM}" --federation-config "${FED_CFG}"

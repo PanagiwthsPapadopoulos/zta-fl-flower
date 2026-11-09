@@ -81,6 +81,15 @@ class ApptainerLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(lifecycle.LifecycleError, "Cannot inspect"):
             self.scan([], unreadable=[10])
 
+    def test_transient_inspection_error_is_rechecked_without_losing_ownership(self):
+        self.begin()
+        original = process(10)
+        self.scan([original], [original])
+        with patch.object(lifecycle, "snapshot", side_effect=[({}, {10}), ({10: original}, set())]), \
+             patch.object(lifecycle.time, "sleep"):
+            owned, _, _ = self.inventory.scan([])
+        self.assertEqual(owned, [original])
+
     def test_unrelated_unreadable_process_does_not_block_startup_or_shutdown(self):
         with patch.object(lifecycle, "snapshot", return_value=({}, {900})):
             self.inventory.begin()

@@ -510,7 +510,8 @@ elif "--writable-tmpfs" in args or (args[:1] == ["exec"] and "RUN_CFG=mode=\\"si
                 pgrep.chmod(0o755)
                 env = {**os.environ, "PATH": str(root / "bin") + os.pathsep + os.environ["PATH"],
                        "CALL_RECORD": str(root / "calls.jsonl"), "ZTA_BATCH_MANAGED": "1",
-                       "ZTA_BATCH_ATTEMPT": "test", "ZTA_BATCH_PHASE_FILE": str(root / "runtime/phase"), "USER": "test"}
+                       "ZTA_BATCH_ATTEMPT": "test", "ZTA_BATCH_PHASE_FILE": str(root / "runtime/phase"),
+                       "ZTA_SIM_RUNTIME_DIR": str(root / "local-scratch"), "USER": "test"}
                 result = subprocess.run(["bash", str(root / f"scripts/simulation/deploy_code_sim_{backend}.sh")], env=env, capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
                 self.assertEqual((root / "runtime/phase").read_text().strip(), "training")
