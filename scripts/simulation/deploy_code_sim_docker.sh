@@ -16,13 +16,14 @@ fi
 # =========================================================
 # PRE-FLIGHT DEPENDENCY & HEALTH CHECK
 # =========================================================
+COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
+if [ "${ZTA_BATCH_MANAGED:-0}" != "1" ]; then
 if [ ! -f "$PROJECT_ROOT/runtime/infra/.network_ready" ]; then
     echo "❌ FATAL: The simulation network is not running or failed to boot."
     echo "   Please run 'boot_network_sim_docker.sh' first and wait for the success message."
     exit 1
 fi
 
-COMPOSE_FILE="$PROJECT_ROOT/docker/docker-compose.yml"
 RUNNING_CONTAINERS=$(docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_ROOT" ps --status running -q 2>/dev/null)
 
 if [ -z "$RUNNING_CONTAINERS" ]; then
@@ -31,6 +32,7 @@ if [ -z "$RUNNING_CONTAINERS" ]; then
     rm -f "$PROJECT_ROOT/runtime/infra/.network_ready"
     echo "   Please run 'boot_network_sim_docker.sh' to boot the network."
     exit 1
+fi
 fi
 
 # A batch owns one cloud container and one coordinator for its whole queue.

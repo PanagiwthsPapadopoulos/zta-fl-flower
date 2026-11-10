@@ -4,7 +4,6 @@ This is an internal entry point. Start batches through batch_runs.py on the host
 """
 from __future__ import annotations
 
-import ctypes
 import json
 import os
 from pathlib import Path
@@ -18,14 +17,10 @@ import time
 import tomllib
 import uuid
 
-try:
-    import psutil
-except ImportError:
-    from ray.thirdparty_files import psutil
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.ops.batch_runs import BatchError, Cancelled, CONFIG_FILES, complete, merged, read_json, progress
+from scripts.ops.batch_runs import BatchError, Cancelled, stop_process, merged, read_json, progress
 from src.shared.utils.simulation_lifecycle import atomic_json, stamp
 
 
@@ -44,19 +39,14 @@ def federation_config(manifest, count):
 
 
 class Flower:
-    """One coordinator; only its run processes are drained between experiments."""
+    """One coordinator; Flower run status controls bundle handover."""
     def __init__(self, root, session, grace):
         self.root, self.session, self.grace = root, session, grace
         self.link = self.stream = None
-        self.services = {}
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         self.scratch = Path(tempfile.mkdtemp(prefix='zta-batch-', dir='/tmp'))
-        # Orphaned simulation/Ray processes stay children of this supervisor on Linux.
-        if sys.platform == 'linux':
-            if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
-                raise OSError(ctypes.get_errno(), 'Cannot enable child subreaper')
         os.environ['PATH'] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get('PATH', '')
         os.environ.update(FLWR_HOME=str(self.scratch / 'flower'),
                           RAY_TMPDIR=str(self.scratch / 'ray'),
@@ -75,20 +65,11 @@ class Flower:
             '--control-api-address', f'127.0.0.1:{port}',
             '--serverappio-api-address', '127.0.0.1:0',
             '--database', str(self.scratch / 'state.db'),
-        ], cwd=root, stdout=self.output, stderr=subprocess.STDOUT)
+        ], cwd=root, stdout=self.output, stderr=subprocess.STDOUT, start_new_session=True)
         atomic_json(session / 'flower_runtime.json', {'pid': self.link.pid, 'scratch': str(self.scratch),
                     'control_address': f'127.0.0.1:{port}', 'started_at': stamp()})
 
     def cli(self, *args, timeout=30):
-        if self.link.poll() is not None:
-            raise BatchError('Flower SuperLink exited; see superlink-console.log')
-        for pid, born in self.services.items():
-            try:
-                service = psutil.Process(pid)
-                if service.create_time() != born or service.status() == psutil.STATUS_ZOMBIE:
-                    raise BatchError('Flower SuperExec exited')
-            except psutil.NoSuchProcess as exc:
-                raise BatchError('Flower SuperExec exited') from exc
         result = subprocess.run(['flwr', *args, '--format', 'json'], cwd=self.root,
                                 capture_output=True, text=True, timeout=timeout)
         if result.returncode:
@@ -98,66 +79,29 @@ class Flower:
             raise BatchError(f'Flower command did not succeed: {data}')
         return data
 
-    def ready(self):
-        deadline = time.monotonic() + 90
+    def ready(self, timeout):
+        # Only ask Flower whether its API is accepting bundle/status requests.
+        deadline = time.monotonic() + timeout
         while True:
             try:
-                data = self.cli('list', 'local', timeout=5)
-                if data['runs']:
-                    raise BatchError('New private SuperLink unexpectedly contains existing runs')
-                children = psutil.Process(self.link.pid).children()
-                executors = [p for p in children if any(Path(arg).name == 'flower-superexec' for arg in p.cmdline()[:2])]
-                if not executors:
-                    raise BatchError('Waiting for Flower SuperExec')
-                self.services = {p.pid: p.create_time() for p in executors}
+                self.cli('list', 'local', timeout=5)
                 return
-            except (BatchError, subprocess.TimeoutExpired):
-                if self.link.poll() is not None or time.monotonic() >= deadline:
-                    raise
+            except (BatchError, subprocess.TimeoutExpired, ValueError, OSError):
+                if time.monotonic() >= deadline:
+                    raise BatchError('Flower API startup timed out; see superlink-console.log')
                 time.sleep(1)
 
-    def remaining(self):
-        excluded = {self.link.pid} if self.link else set()
-        if self.stream:
-            excluded.add(self.stream.pid)
-        live = []
-        for process in psutil.Process().children(recursive=True):
-            if process.pid in excluded:
-                continue
+    def wait_finished(self, run_id):
+        deadline = time.monotonic() + self.grace
+        while time.monotonic() < deadline:
             try:
-                if self.services.get(process.pid) == process.create_time():
-                    continue
-                if process.status() == psutil.STATUS_ZOMBIE:
-                    try:
-                        os.waitpid(process.pid, os.WNOHANG)
-                    except ChildProcessError:
-                        pass
-                else:
-                    live.append(process)
-            except psutil.NoSuchProcess:
-                pass
-        return live
-
-    def drain(self):
-        """Allow normal exit, then terminate only this worker's run descendants."""
-        for action in (None, 'terminate', 'kill'):
-            deadline = time.monotonic() + self.grace
-            sent = set()
-            while True:
-                live = self.remaining()
-                if not live:
+                rows = self.cli('list', 'local', '--run-id', str(run_id), timeout=5)['runs']
+                if any(str(row['run-id']) == str(run_id) and row['status'].startswith('finished:') for row in rows):
                     return
-                for process in live:
-                    if action and process.pid not in sent:
-                        try:
-                            getattr(process, action)()
-                        except psutil.NoSuchProcess:
-                            pass
-                        sent.add(process.pid)
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(.2)
-        raise BatchError('Training processes remain alive; refusing to change experiment configuration')
+            except (BatchError, subprocess.TimeoutExpired, ValueError, OSError):
+                pass
+            time.sleep(1)
+        raise BatchError('Flower stop timed out; next bundle was not submitted')
 
     def stop_stream(self):
         if self.stream:
@@ -182,25 +126,17 @@ class Flower:
 
     def close(self):
         self.stop_stream()
-        self.drain()
         if self.link:
-            self.link.terminate()
-            try:
-                self.link.wait(timeout=self.grace)
-            except subprocess.TimeoutExpired:
-                self.link.kill()
-                self.link.wait(timeout=5)
+            stop_process(self.link, self.grace)
         self.output.close()
-        self.services.clear()
-        self.drain()
         database = self.scratch / 'state.db'
         if database.exists():
             shutil.copy2(database, self.session / 'flower-state.db')
-        shutil.rmtree(self.scratch)
+        shutil.rmtree(self.scratch, ignore_errors=True)
 
 
 def save_logs(root, folder):
-    # Keep mounted directory in place; only rotate files after all run processes exit.
+    # Rotate after Flower reports the run finished.
     for source in (root / 'logs').glob('*.jsonl'):
         target = folder / 'logs' / source.name
         target.parent.mkdir(exist_ok=True)
@@ -224,6 +160,8 @@ def run_experiment(root, folder, entry, limits, flower, update, cancelled):
     start = time.monotonic()
     run_id = None
     prepared = False
+    finished = False
+    builder = None
     status, reason = 'CRASHED', 'Run was not submitted'
     log_path = root / 'logs/system/run_cloud.log'
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +169,7 @@ def run_experiment(root, folder, entry, limits, flower, update, cancelled):
     try:
         with (folder / 'prepare.log').open('wb') as log:
             builder = subprocess.Popen([sys.executable, str(root / 'scripts/setup/build_artifacts.py')],
-                                       cwd=root, stdout=log, stderr=subprocess.STDOUT)
+                                       cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             while builder.poll() is None:
                 if cancelled():
                     raise Cancelled('Batch interrupted')
@@ -241,7 +179,10 @@ def run_experiment(root, folder, entry, limits, flower, update, cancelled):
             if builder.returncode:
                 return 'CRASHED', 'Dataset preparation failed; see prepare.log'
         prepared = True
-        save_artifact_metadata(root, folder, entry['configs'])
+        try:
+            save_artifact_metadata(root, folder, entry['configs'])
+        except OSError as exc:
+            print(f'Artifact metadata: {exc}', file=sys.stderr, flush=True)
         update(phase='training')
         manifest = tomllib.loads((root / 'pyproject.toml').read_text())
         submitted = flower.cli('run', str(root), 'local', '--run-config',
@@ -261,35 +202,39 @@ def run_experiment(root, folder, entry, limits, flower, update, cancelled):
             if number > best:
                 best, last_progress = number, time.monotonic()
                 update(completed_round=number)
-            rows = flower.cli('list', 'local', '--run-id', str(run_id))['runs']
-            if len(rows) != 1 or str(rows[0]['run-id']) != str(run_id):
-                raise BatchError('Flower returned no matching run status')
-            row = rows[0]
-            atomic_json(folder / 'flower_status.json', row)
-            if row['status'].startswith('finished:'):
-                if row['status'] == 'finished:completed' and complete(root, entry['attempt'], entry['target_rounds']):
-                    status, reason = 'SUCCESS', 'Flower completed; all requested rounds and final checkpoint saved'
-                else:
-                    status, reason = 'INCOMPLETE', f"Flower {row['status']}: {row.get('status-details', '')}"
-                return status, reason
+            try:
+                rows = flower.cli('list', 'local', '--run-id', str(run_id))['runs']
+                row = next((r for r in rows if str(r['run-id']) == str(run_id)), None)
+                if row:
+                    atomic_json(folder / 'flower_status.json', row)
+                    if row['status'].startswith('finished:'):
+                        finished = True
+                        status = 'SUCCESS' if row['status'] == 'finished:completed' else 'INCOMPLETE'
+                        return status, f"Flower {row['status']}: {row.get('status-details', '')}"
+            except (BatchError, subprocess.TimeoutExpired, ValueError, OSError) as exc:
+                (folder / 'status_error.txt').write_text(str(exc))
             if time.monotonic() - start >= limits['run_timeout']:
                 return 'TIMEOUT', 'Total experiment time limit exceeded'
             if time.monotonic() - last_progress >= limits['stall_timeout']:
                 return 'STALLED', 'No newly saved round within the progress time limit'
             time.sleep(limits['poll_interval'])
     finally:
-        # Even a failed/expired Flower task can still have live workers.
-        if run_id:
+        if builder is not None and builder.poll() is None:
+            stop_process(builder, limits["shutdown_timeout"])
+        if run_id and not finished:
             try:
                 flower.cli('stop', str(run_id), 'local')
             except (BatchError, subprocess.TimeoutExpired, ValueError) as exc:
                 (folder / 'stop_error.txt').write_text(str(exc))
+            flower.wait_finished(run_id)
         flower.stop_stream()
-        flower.drain()
-        if prepared and log_path.exists():
-            shutil.copy2(log_path, folder / 'run_cloud.log')
-        save_logs(root, folder)
-        flower.archive_ray(folder)
+        try:
+            if prepared and log_path.exists():
+                shutil.copy2(log_path, folder / 'run_cloud.log')
+            save_logs(root, folder)
+            flower.archive_ray(folder)
+        except OSError as exc:
+            print(f'Log archive: {exc}', file=sys.stderr, flush=True)
 
 
 def work(root, session):
@@ -309,7 +254,7 @@ def work(root, session):
         runtime_folder = session / state['infrastructure_id']
         runtime_folder.mkdir(exist_ok=True)
         flower = Flower(root, runtime_folder, limits['shutdown_timeout'])
-        flower.ready()
+        flower.ready(limits["boot_timeout"])
         for index, entry in enumerate(state['runs']):
             if cancelled():
                 return 130

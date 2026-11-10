@@ -1,172 +1,77 @@
 # Sequential simulation batches
 
-[batch_runs.py](../scripts/ops/batch_runs.py) boots the simulation infrastructure **once**, runs the queue one experiment at a time, and shuts down once at the end. It supports Docker and Apptainer simulation, not deployment.
+The batch runner boots one simulation environment and one Flower coordinator, then submits experiments one at a time. It uses Flower's run status to decide when to submit the next bundle, plus boot, preparation, stall, run and stop timeouts.
 
-## Start the 80-experiment queue
+There are no batch process inventories, PID-name checks, TPM health gates, source-fingerprint gates, workspace locks, stale-session gates or checkpoint-completeness gates. TPM attestation, SHAP, trust filtering and the training application's security policies remain enabled. The paper queue still contains all 100 clients and uses the 180-second TPM freshness window.
 
-From the repository root on the HPC, with the existing images and datasets:
+## Run
+
+From the repository root, using Python with the existing PyYAML dependency available:
 
 ```sh
-PYTHONPATH="$PWD/.batch-python:$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 scripts/ops/batch_runs.py \
+python3 scripts/ops/batch_runs.py \
   --runtime apptainer \
   --queue experiments_archived/paper_80 \
   --prepare-timeout 43200 \
-  --stall-timeout 7200 \
+  --stall-timeout 10800 \
   --run-timeout 165600
 ```
 
-The `.batch-python` path supports the previously copied PyYAML package on hosts without a virtual environment. It is harmless if that directory is absent and PyYAML is already installed. No packages are downloaded by the runner. The host needs Python 3.9+ and PyYAML; the existing image supplies Python 3.11+, Flower 1.30, Ray and ML dependencies. Apptainer supervision requires Linux pidfd support.
+Use `--runtime docker` for the Docker simulation. On HPC, use the existing `.batch-python` copy if host Python lacks PyYAML: prefix the command with `PYTHONPATH="$PWD/.batch-python:$PWD"`. No new packages are required. `--dry-run` prints the merged plan without launching anything; it is not a validation suite.
 
-Add `--dry-run` to validate and print the complete plan without starting containers or changing files. Replace `apptainer` with `docker` for Docker. Keep the HPC allocation and terminal session alive for the batch's duration. Time limits apply per experiment, not to the entire queue.
+Start one batch in the workspace with the previous simulation stopped. The runner no longer detects competing supervisors or recovers old live processes. Keep the queue's topology consistent with `config/network.yaml`, which boots the TPM environment.
 
-**Start only this command.** The runner starts the TPM services and one persistent cloud environment automatically. It does not adopt an independently started federation; stop an existing standalone simulation first. Existing images are reused. Repository changes are mounted into the images, so this update does not require rebuilding them.
+## Configuration and sequence
 
-## What remains alive
+Experiment directories are read in sorted name order. Each starts from the same snapshot of `config/network.yaml`, `config/training.yaml` and `config/security.yaml`; corresponding files in that experiment directory override the baseline. Partial and complete YAML files both work. Extra files are ignored. Missing values never inherit from the previous experiment. The runner does not enforce a configuration schema.
 
-```text
-Boot all TPM services once
-Start one cloud environment and private Flower SuperLink/SuperExec
-  Experiment 1: prepare data → submit run → wait → save results → drain run workers
-  Experiment 2: prepare data → submit run → wait → save results → drain run workers
-  ...
-Stop the coordinator and infrastructure once
-```
+The frozen plan is stored in `results/batch_archives/<session>/batch.json`. Each experiment gets a unique `run_name` and `batch_attempt`. Its resolved YAML files go to `runtime/batch/config/` and its attempt archive. `CONFIG_PATH` points artifact preparation and training at those files. Workspace `config/` files are not rewritten.
 
-Apptainer executes the queue worker in one long-lived `apptainer exec`; Docker uses the existing `sim-cloud` container. Each experiment is a separate Flower run with a new simulation process, Ray workers, model, optimizer, TrustDB and quarantine state. The same TPM services and identities are reused. Nonces, signature/PCR verification, SHAP filtering and trust policy remain enabled. The paper queue retains 100 clients, 100 rounds and the requested **180-second** TPM freshness window.
+The worker prepares the dataset, submits a Flower application bundle, and polls its run ID. `finished:completed` is recorded as `SUCCESS`; other finished outcomes as `INCOMPLETE`. Either allows the next experiment. `SUCCESS` means Flower reported completion; the batch runner does not audit rounds or checkpoints. CPU/GPU scheduling settings come from the local federation in `pyproject.toml`; all configured clients are passed to Flower.
 
-Flower's database and Ray working files live in a private `/tmp/zta-batch-*` directory inside the runtime, rather than the network home directory. After an experiment's workers exit, its Ray logs are archived and that Ray working directory is removed. The coordinator database is retained until the queue ends, then archived. The temporary directory is removed after confirmed shutdown; its location is recorded in `flower_runtime.json` if recovery is needed. A hard kill can leave it behind.
+A preparation failure is recorded and the queue proceeds. An ambiguous submission error stops the worker rather than resubmitting a potentially accepted bundle. Transient status-query failures are retried within the existing run/stall timeouts.
 
-This removes repeated infrastructure teardown between experiments. It does not guarantee that the previously observed training interruption cannot recur.
+## Timeouts and stopping
 
-## Queue and configuration
+- `--boot-timeout`: maximum wait for network provisioning, and separately for Flower's control API (default 1800 seconds).
+- `--prepare-timeout`: maximum dataset preparation time (7200).
+- `--stall-timeout`: maximum time without a newly saved round during training (3600).
+- `--run-timeout`: total experiment duration, including preparation (25200).
+- `--shutdown-timeout`: wait for Flower to report a stopped run, and process termination allowance (120).
+- `--poll-interval`: status polling interval (5).
 
-The configuration contract is unchanged:
+On a run/stall timeout or cancellation, the worker requests `flwr stop` and waits for Flower's finished status. If that stop times out, the queue ends without submitting the next bundle. This is the handover condition, not a process inspection. Training's YAML round/RPC timeouts remain separate.
 
-```text
-experiments_queue/
-  01_clean/
-    training.yaml
-    security.yaml
-  02_attack/
-    training.yaml
-    security.yaml
-```
+Ctrl+C requests cancellation. Final shutdown signals the process groups launched by the runner; Docker also tears down its Compose environment. There is no independent audit of detached processes. Do not start a second invocation while the first is stopping.
 
-- Directory names determine order and must contain only letters, digits, underscores or hyphens.
-- Every experiment starts from the **same baseline snapshot** of `config/network.yaml`, `config/training.yaml` and `config/security.yaml`.
-- Queue files override only their corresponding baseline file. Partial overrides and complete files both work. Omitted values inherit the baseline, never the previous experiment.
-- Unknown keys, misplaced keys, invalid round counts/timeouts and topology changes are rejected before boot. All experiments must have the baseline's effective Fog/Edge topology.
-- Each experiment receives a unique execution `run_name` and matching `batch_attempt`; the queued name remains its human-readable label.
-- The queue is frozen at batch creation. Editing the queue does not change an existing saved batch.
+## Logs and resume
 
-For example, an experiment's `training.yaml` can contain:
+The terminal prints the batch archive and worker-log path. The worker log records experiment starts and outcomes. `results/batch_archives/active_batch.json` points to the latest session.
 
-```yaml
-dataset: unsw_nb15
-dataset_path: data/unsw_nb15/full_dataset/intrusion_records.csv
-random_seed: 42
-num_rounds: 100
-```
+- `<session>/infra_<id>/boot.log`: network provisioning.
+- `<session>/infra_<id>/worker.log`: queue execution and errors.
+- `<session>/infra_<id>/superlink-console.log`: Flower coordinator output.
+- `<session>/attempts/<attempt>/`: resolved configuration, preparation log, Flower submission/status, training log and available Ray logs.
+- `results/<attempt>/`: training metrics and checkpoints.
+- `logs/system/run_cloud.log`: current training stream.
 
-A clean experiment must explicitly disable attack roles that are enabled in its baseline.
+Private Flower/Ray temporary files live under `/tmp/zta-batch-*` inside the runtime. Ray logs are archived after Flower reports a finished run; temporary files are removed during normal cleanup. Archival errors are reported without blocking the next bundle. Runtime/TPM files remain in the workspace and are reused; they are not moved into a full infrastructure snapshot. Hard termination can leave temporary files.
 
-The worker writes each resolved configuration to `runtime/batch/config/` and points the existing configuration loader there through `CONFIG_PATH`. **The workspace's `config/` files are not rewritten during training.** Both artifact preparation and the fresh Flower application use the same resolved configuration. Dataset artifacts are prepared/reused for every experiment using their existing provenance checks, including dataset, seed and partition changes.
-
-Both batch backends read simulation worker CPU/GPU settings from the existing local federation section of `pyproject.toml`, and set the number of clients from the topology. `max_concurrent_gpus` remains a deployment setting; it does not control simulation scheduling. Standalone launchers retain their existing behavior. Do not edit source, hardware policy or the active configuration while a batch runs.
-
-## Progress and output
-
-The terminal prints the session directory and each experiment's phase/saved round. The persistent worker's log also records starts and final outcomes. The workspace pointer `results/batch_archives/active_batch.json` identifies the session; its `batch.json` holds the frozen plan and latest statuses.
-
-```text
-results/batch_archives/<session>/
-  batch.json
-  baseline_config/
-  source/
-  git_state.json
-  preexisting/                         files from before this batch
-  infra_<id>/                         one per invocation, including resume
-    boot.log
-    worker.log
-    flower_runtime.json               coordinator PID, address, temporary path
-    superlink-console.log
-    flower-state.db                   after coordinator shutdown
-    logs/ and runtime/                moved here only at final infrastructure shutdown
-  attempts/<attempt>/
-    executed_config/
-    effective_config.json
-    artifact_manifests/
-    dataset_reference.json
-    status.json
-    events.jsonl
-    prepare.log
-    flower_submission.json
-    flower_status.json                includes Flower's actual failure details
-    run_cloud.log
-    logs/                             that experiment's node JSONL files
-    ray/                              that experiment's Ray diagnostic logs
-results/<attempt>/                    metrics, model, lifecycle and progress markers
-```
-
-Models and results stay in their existing canonical `results/<attempt>/` directory; the runner does not duplicate large model files into the session archive. Raw datasets and training tensors remain in `data/`. During training, the current Flower stream is `logs/system/run_cloud.log`. Node logs rotate only after all experiment workers exit. Infrastructure logs remain open throughout the queue.
-
-The internal [batch_worker.py](../scripts/ops/batch_worker.py) is launched by the container launcher; do not invoke it separately on the host.
-
-## Completion and failures
-
-Success requires Flower to report `finished:completed`, the matching application lifecycle to say `COMPLETED`, all requested metric rounds and the final saved-round marker, and a nonempty final model checkpoint. A zero CLI exit status alone is insufficient.
-
-After a failed or timed-out run, the worker requests that run's stop, waits for its training processes to exit and, if necessary, terminates its own remaining run descendants. It preserves the persistent coordinator, executor and TPM services. Only after this succeeds does it archive the run's logs and apply the next experiment's configuration. A failed experiment remains recorded as failed; it is not silently retried or counted as a trained model.
-
-An unconfirmed worker shutdown, unavailable coordinator, unreadable owned process, or archival failure stops the queue. This prevents a live old experiment from reading the next experiment's configuration. The host performs infrastructure teardown only once when the worker finishes, fails or is cancelled. Final Apptainer process inspection retries transient read failures within the existing shutdown allowance, but persistent uncertainty still blocks a new batch.
-
-| Limit | Default | Option |
-| --- | --- | --- |
-| One-time network boot | 30 minutes | `--boot-timeout 1800` |
-| Dataset preparation per experiment | 2 hours | `--prepare-timeout 7200` |
-| No newly saved round | 1 hour | `--stall-timeout 3600` |
-| Total experiment, including preparation | 7 hours | `--run-timeout 25200` |
-| Each graceful/forced shutdown phase | 2 minutes | `--shutdown-timeout 120` |
-| Progress polling | 5 seconds | `--poll-interval 5` |
-
-Bounded Flower control calls and shutdown can add time beyond a deadline. The separate YAML `round_timeout` controls Flower's response budget. Neither that setting nor batch deadlines change TPM freshness. Long evaluations count toward the no-progress deadline.
-
-## Interruption and resume
-
-Ctrl+C requests cancellation, drains the active training processes and shuts down the infrastructure. Remaining experiments stay pending. Resume on the same execution host/workspace:
+To resume pending entries after the previous invocation has stopped:
 
 ```sh
-PYTHONPATH="$PWD/.batch-python:$PWD${PYTHONPATH:+:$PYTHONPATH}" python3 scripts/ops/batch_runs.py \
-  --resume results/batch_archives/<session> --retry-interrupted
+python3 scripts/ops/batch_runs.py --resume results/batch_archives/<session>
 ```
 
-Resume first recovers any owned infrastructure left by a terminated supervisor. It then boots one new environment for the remaining queue. `--retry-interrupted` restarts interrupted/cancelled experiments from round 1 under new attempt IDs, preserving their history. Without it (or with `--skip-interrupted`), only pending experiments run. Successful experiments are never repeated automatically. Other failed experiments require a new queue/batch if you want to repeat them.
+Add `--retry-interrupted` to restart interrupted/cancelled experiments from round 1. Previously successful or failed entries are not automatically rerun. Resume uses the saved configurations and timeouts with the current code; it performs no fingerprint comparison or old-process recovery.
 
-Resume uses the **saved configuration and time limits**, not current queue edits. Source changes block continuation after recovery; start a new batch for new code or new settings. The workspace lock prevents two supervisors from running concurrently.
-
-Old version-1 batches can be passed to `--resume` for cleanup only. After confirmed cleanup, the command reports that legacy recovery is complete and exits 2; run the normal new-batch command to use this implementation and the current 180-second queue settings. It does not silently translate an old batch into a new one. If old ownership evidence cannot establish shutdown, recovery remains blocked.
-
-Exit codes: `0` all experiments succeeded; `1` the queue completed with failures; `2` validation/recovery or safe continuation failed; `130` cancellation. Check both experiment outcomes and the final infrastructure status.
-
-## Verification
+## Development verification
 
 ```sh
-python3 -B -m unittest scripts.tests.test_batch_runs scripts.tests.test_apptainer_lifecycle -v
+python3 -B -m unittest scripts.tests.test_batch_runs scripts.tests.test_batch_worker scripts.tests.test_batch_integration -v
 ```
 
-In an environment with the existing Flower/Ray/ML dependencies, also run:
-
-```sh
-python3 -B -m unittest scripts.tests.test_batch_worker scripts.tests.test_batch_integration -v
-```
-
-An optional local process test runs two tiny two-client Flower simulations on the same coordinator (requires localhost access and the installed runtime dependencies):
-
-```sh
-ZTA_FLOWER_SMOKE=1 python3 -B -m unittest scripts.tests.test_batch_worker.RealFlowerSmoke -v
-```
-
-These tests cover independent YAML overlays, exact completion, one coordinator per queue, configuration handover, cancellation, failure continuation, shutdown blocking, recovery and shell dispatch. They do not establish that 80 full HPC experiments will finish successfully.
+The tests cover configuration inheritance, bundle sequencing, timeout/stop handover and shell dispatch. The integration tests need the existing ML dependencies. An optional small real Flower test is available with `ZTA_FLOWER_SMOKE=1 python3 -B -m unittest scripts.tests.test_batch_worker.RealFlowerSmoke -v`. Local tests do not establish full HPC completion.
 
 ## Archived paper reproduction queue
 

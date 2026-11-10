@@ -41,6 +41,7 @@ export TZ="$HOST_TZ"
 # =========================================================
 # PRE-FLIGHT DEPENDENCY & HEALTH CHECK
 # =========================================================
+if [ "${ZTA_BATCH_MANAGED:-0}" != "1" ]; then
 if [ ! -f "$PROJECT_ROOT/runtime/infra/.network_ready" ]; then
     echo "  FATAL: The simulation network is not running or failed to boot."
     echo "   Please run 'boot_network_sim_apptainer.sh' first and wait for the success message."
@@ -53,6 +54,7 @@ if ! pgrep -f "swtpm" > /dev/null; then
     rm -f "$PROJECT_ROOT/runtime/infra/.network_ready"
     echo "   Please run 'boot_network_sim_apptainer.sh' to boot the network."
     exit 1
+fi
 fi
 
 # =========================================================
