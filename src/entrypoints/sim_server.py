@@ -70,8 +70,8 @@ def _build_run_metadata(run_config: dict) -> dict:
     }
 
 def server_fn(context: Context) -> ServerAppComponents:
-    from src.shared.utils.simulation_resources import simulation_config
-    run_config = simulation_config(context.run_config)
+    from src.shared.utils.config_loader import get_merged_config
+    run_config = get_merged_config(context.run_config)
     run_metadata = _build_run_metadata(run_config)
     
     torch.set_num_threads(1)

@@ -11,7 +11,7 @@ Read the [architecture parity report](docs/architecture-parity.md) for the relat
 | [Architecture parity](docs/architecture-parity.md) | Component behavior, evidence and deviations from the reference work |
 | [Deployment](docs/deployment.md) | Run the distributed three-tier network with Docker or Apptainer |
 | [Simulation](docs/simulation.md) | Run the Ray-based simulation and external software TPMs |
-| [Overnight batches](docs/batch-runs.md) | Queue simulations with separate configs, deadlines and diagnostic backups |
+| [Overnight batches](docs/batch-runs.md) | Run sequential experiments on one persistent simulation environment |
 | [Dataset preparation](docs/dataset-preparation.md) | Download, clean and select full datasets; understand preprocessing choices |
 | [Testing](docs/testing.md) | Run component tests and interpret their evidence and limits |
 | [Preflight runs](docs/preflight.md) | Exact live test settings and acceptance criteria before long experiments |

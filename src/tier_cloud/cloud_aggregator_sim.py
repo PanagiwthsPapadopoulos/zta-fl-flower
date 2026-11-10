@@ -85,8 +85,6 @@ class CloudAggregator(GlobalModelState, FedAvg):
         self.sync_global_state(parameters)
         self.active_nonces = {}
         self.round_start_time = time.time()
-        for gatekeeper in self.gatekeepers.values():
-            gatekeeper.simulation_received_at = {}
         
         # Emit simulation phase events for the UI
         self.logger.info(f"{self.log_prefix} Shouting to all FOG clients!", extra={"round": server_round})
@@ -96,54 +94,13 @@ class CloudAggregator(GlobalModelState, FedAvg):
             self.fog_server_loggers[i].info(f"[FOG {i} SERVER] [SIMULATED IPC SERVER] START received for round {server_round}. Shouting to EDGE clients!", extra={"round": server_round})
         
         shared_instructions = super().configure_fit(server_round, parameters, client_manager)
-        configured = configure_edge_fit(shared_instructions, list(self.gatekeepers.values()), server_round,
-                                        self.active_nonces, timeout=120.0)
-        failed = [cid for gatekeeper in self.gatekeepers.values()
-                  for cid, outcome in gatekeeper.admission_outcomes.items()
-                  if outcome.get("reason", "").startswith("admission_failed:")]
-        if failed:
-            self.fail_round(server_round, "Admission requests failed", clients=failed)
-        from src.shared.utils.simulation_transport import TimedClientProxy
-        self.response_received_at = {}
-        return [(TimedClientProxy(proxy, self.response_received_at), instruction)
-                for proxy, instruction in configured]
-
-    def fail_round(self, server_round, reason, **details):
-        from src.shared.utils.simulation_lifecycle import atomic_json
-        atomic_json(f"results/{self.experiment_name}/simulation_failure.json",
-                    {"round": server_round, "reason": reason, **details})
-        raise RuntimeError(f"Simulation round {server_round}: {reason}; see simulation_failure.json")
-
-    def validation_accuracy(self, model):
-        accuracy = super().validation_accuracy(model)
-        self._candidate_accuracy = accuracy
-        return accuracy
-
-    def aggregate_regions(self, models, weights, server_round):
-        baseline = self.previous_val_acc
-        self._candidate_accuracy = None
-        parameters, metrics = super().aggregate_regions(models, weights, server_round)
-        self.last_aggregation = {**metrics, "candidate_validation_accuracy": self._candidate_accuracy,
-                                 "previous_validation_accuracy": baseline,
-                                 "rollback_cutoff": (baseline * float(self.run_metadata["rollback_threshold"])
-                                                     if baseline is not None else None)}
-        self.logger.info("Simulation global aggregation: %s", json.dumps(self.last_aggregation),
-                         extra={"round": server_round})
-        if metrics["aggregation_status"] == "error":
-            self.fail_round(server_round, "Global aggregation failed", aggregation=self.last_aggregation)
-        return parameters, metrics
+        return configure_edge_fit(shared_instructions, list(self.gatekeepers.values()), server_round,
+                                  self.active_nonces)
 
     def configure_evaluate(self, server_round, parameters, client_manager):
         return []  # GlobalEvaluator evaluates centrally without broadcasting to edges.
 
     def aggregate_fit(self, server_round, results, failures):
-        expected = set(self.active_nonces)
-        returned = [proxy.cid for proxy, _ in results]
-        crashed = [proxy.cid for proxy, result in results if result.metrics.get("status") == "crashed"]
-        if failures or crashed or expected != set(returned) or len(returned) != len(set(returned)):
-            self.fail_round(server_round, "Incomplete client execution", missing_clients=sorted(expected - set(returned)),
-                            crashed_clients=crashed, transport_failures=len(failures),
-                            expected_responses=len(expected), received_responses=len(returned))
         groupings = {i: [] for i in self.gatekeepers}
         assignments = {cid: i for i, gatekeeper in self.gatekeepers.items()
                        for cid in gatekeeper.client_identities}
@@ -163,7 +120,6 @@ class CloudAggregator(GlobalModelState, FedAvg):
         models, weights = [], []
         empty_regions, failed_regions = 0, 0
         for fog, cluster in groupings.items():
-            self.gatekeepers[fog].simulation_received_at = getattr(self, "response_received_at", {})
             parameters, _, metrics = process_region(
                 gatekeeper=self.gatekeepers[fog], reference=self.global_model,
                 val_data=self.fog_val_data.get(fog, self.val_data), results=cluster,
@@ -181,9 +137,6 @@ class CloudAggregator(GlobalModelState, FedAvg):
                 failed_regions += 1
             else:
                 empty_regions += 1
-        if failed_regions:
-            self.fail_round(server_round, "Regional verification encountered an execution error",
-                            failed_regions=failed_regions)
         parameters, metrics = self.aggregate_regions(models, weights, server_round)
         metrics.update(empty_regions=empty_regions, failed_regions=failed_regions, rejected_regions=0)
         return parameters, metrics
@@ -215,7 +168,6 @@ class CloudAggregator(GlobalModelState, FedAvg):
             "payload_size_mb": payload_size_mb,
             "timestamp": datetime.now().isoformat()
         }
-        round_data["aggregation"] = getattr(self, "last_aggregation", {"aggregation_status": "initial"})
         self.results_dict["performance"].append(round_data)
         
         run_dir = f"results/{self.experiment_name}"

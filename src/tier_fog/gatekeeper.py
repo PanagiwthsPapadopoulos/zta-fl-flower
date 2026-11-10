@@ -151,16 +151,10 @@ class ZeroTrustGatekeeper:
                 if identity != enrolled_id:
                     raise ValueError("Token does not match enrolled TPM identity")
                 expected_pcr = current_ledger.get(identity)
-                timing = {}
-                if self.run_metadata.get("telemetry_mode") == "simulated":
-                    received = getattr(self, "simulation_received_at", {}).get(cid)
-                    if received is not None:
-                        timing["received_at"] = received
                 if not expected_pcr or not self.tpm_engine.verify_attestation_token(
                     token=token, expected_nonce=nonce, public_key_path=os.path.join(folder, "ak.pub"),
                     expected_pcr=expected_pcr, max_age_seconds=int(self.run_metadata["tpm_freshness_window"]),
                     round_num=server_round,
-                    **timing,
                 ):
                     raise ValueError("Attestation verification failed")
             self.client_identities[cid] = (identity, label)

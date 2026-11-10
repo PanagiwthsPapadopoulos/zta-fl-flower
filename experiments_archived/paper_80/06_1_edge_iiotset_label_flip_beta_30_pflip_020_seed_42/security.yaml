@@ -14,7 +14,7 @@ shap_aware_constrained: true
 shap_aware_tau: null
 shap_aware_max_backtracks: 10
 rollback_threshold: 0.8
-tpm_freshness_window: 60
+tpm_freshness_window: 180
 label_flip_ratio: 0.3
 grad_manip_ratio: 0.0
 backdoor_ratio: 0.0

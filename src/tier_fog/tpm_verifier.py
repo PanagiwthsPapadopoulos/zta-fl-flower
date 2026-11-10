@@ -24,8 +24,7 @@ class TPMVerifier:
         public_key_path: str,
         round_num: int,
         expected_pcr: str = None,
-        max_age_seconds: int = 60,
-        received_at: float = None,
+        max_age_seconds: int = 60
     ) -> bool:
         """Verifies an incoming attestation token's signature, sealed nonce+timestamp freshness, and PCR health."""
         session_id = uuid.uuid4().hex
@@ -42,12 +41,6 @@ class TPMVerifier:
 
             token_time = float(token.get("timestamp", 0.0))
             current_time = time.time()
-            if received_at is not None:
-                # Only the simulation coordinator supplies this value. A response
-                # cannot become stale merely while waiting for other virtual clients.
-                if not math.isfinite(received_at) or received_at > current_time:
-                    return False
-                current_time = received_at
 
             if not expected_nonce or not expected_pcr or not math.isfinite(token_time):
                 return False

@@ -33,6 +33,15 @@ if [ -z "$RUNNING_CONTAINERS" ]; then
     exit 1
 fi
 
+# A batch owns one cloud container and one coordinator for its whole queue.
+if [ -n "${ZTA_BATCH_SESSION:-}" ]; then
+    exec docker exec -w /app \
+      -e ZTA_BATCH_ATTEMPT="$ZTA_BATCH_ATTEMPT" \
+      -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
+      -e TORCH_NUM_THREADS=1 \
+      sim-cloud /python/venv/bin/python3 /app/scripts/ops/batch_worker.py "$ZTA_BATCH_SESSION"
+fi
+
 # =========================================================
 # 1. LOG ROTATION & TOPOLOGY ANALYSIS
 # =========================================================

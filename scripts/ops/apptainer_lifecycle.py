@@ -7,23 +7,12 @@ import json
 import os
 from pathlib import Path
 import signal
-import time
 
 from src.shared.utils.simulation_lifecycle import atomic_json
 
 
 class LifecycleError(RuntimeError):
     pass
-
-
-class ProcessInspectionError(LifecycleError):
-    pass
-
-
-class UnreadableProcesses(set):
-    def __init__(self):
-        super().__init__()
-        self.errors = {}
 
 
 def process_record(pid, proc=Path("/proc")):
@@ -38,7 +27,7 @@ def process_record(pid, proc=Path("/proc")):
 
 
 def snapshot(proc=Path("/proc")):
-    records, unreadable = {}, UnreadableProcesses()
+    records, unreadable = {}, set()
     for path in proc.iterdir():
         if not path.name.isdigit():
             continue
@@ -48,10 +37,8 @@ def snapshot(proc=Path("/proc")):
                 records[record["pid"]] = record
         except (FileNotFoundError, ProcessLookupError):
             pass
-        except (OSError, ValueError, IndexError) as exc:
+        except (OSError, ValueError, IndexError):
             unreadable.add(int(path.name))
-            unreadable.errors[int(path.name)] = {"type": type(exc).__name__,
-                                                "errno": getattr(exc, "errno", None), "detail": str(exc)}
     return records, unreadable
 
 
@@ -134,20 +121,10 @@ class ProcessInventory:
             self.save()
 
     def scan(self, marked):
+        records, unreadable = snapshot()
         required = self.known.keys() | {r["pid"] for r in marked}
-        for retry in range(3):
-            records, unreadable = snapshot()
-            if not unreadable & required:
-                break
-            if retry < 2:
-                time.sleep(.1)
         if unreadable & required:
-            atomic_json(self.path.parent / "process_inspection_error.json", {
-                "pids": sorted(unreadable & required),
-                "errors": getattr(unreadable, "errors", {}),
-                "observed_at_unix": time.time(),
-            })
-            raise ProcessInspectionError(
+            raise LifecycleError(
                 f"Cannot inspect owned/marked PIDs {sorted(unreadable & required)}; "
                 "shutdown is unconfirmed")
         owned = {pid for pid, record in records.items()
