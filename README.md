@@ -11,12 +11,21 @@ Read the [architecture parity report](docs/architecture-parity.md) for the relat
 | [Architecture parity](docs/architecture-parity.md) | Component behavior, evidence and deviations from the reference work |
 | [Deployment](docs/deployment.md) | Run the distributed three-tier network with Docker or Apptainer |
 | [Simulation](docs/simulation.md) | Run the Ray-based simulation and external software TPMs |
-| [Native Apple Silicon](docs/native-mps.md) | Train with Flower/MPS on macOS and TPM-only Docker containers |
+| [Native Apple Silicon](docs/native-mps.md) | Single runs and resumable MPS batches on macOS with TPM-only Docker |
 | [Overnight batches](docs/batch-runs.md) | Run sequential experiments with topology and completion checks |
 | [Dataset preparation](docs/dataset-preparation.md) | Download, clean and select full datasets; understand preprocessing choices |
 | [Testing](docs/testing.md) | Run component tests and interpret their evidence and limits |
 | [Preflight runs](docs/preflight.md) | Exact live test settings and acceptance criteria before long experiments |
 | [Monitoring and results](docs/monitoring-and-results.md) | Follow live progress, inspect logs and produce plots/security metrics |
+
+For native Apple Silicon batches (Docker runs only the TPMs):
+
+```bash
+.venv/bin/python scripts/ops/batch_runs_mps.py --queue experiments_archived/paper_80 --workers 2 --dry-run
+```
+
+Remove `--dry-run` to execute the queue. See the [native batch guide](docs/native-mps.md#sequential-mps-batches) for completion checks, results, resume and worker settings.
+Docker/NVIDIA and Apptainer batches continue to use `scripts/ops/batch_runs.py`.
 
 ## Architecture and execution modes
 

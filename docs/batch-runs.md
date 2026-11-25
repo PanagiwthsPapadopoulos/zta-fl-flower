@@ -4,6 +4,8 @@ The batch runner boots one simulation environment and one Flower coordinator, th
 
 There are no batch process inventories, PID-name checks, TPM health gates, source-fingerprint gates, workspace locks, stale-session gates. TPM attestation, SHAP, trust filtering and the training application's security policies remain enabled. The paper queue still contains all 100 clients and uses the 180-second TPM freshness window.
 
+For native Apple Silicon batches, use [the MPS batch runner](native-mps.md#sequential-mps-batches). The commands below remain the Docker/NVIDIA and Apptainer path.
+
 ## Run
 
 From the repository root, using Python with the existing PyYAML dependency available:
