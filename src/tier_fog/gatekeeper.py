@@ -16,7 +16,7 @@ class ZeroTrustGatekeeper:
         self.log_prefix = log_prefix
         self.run_metadata = run_metadata
         self.fog_num = fog_num
-        self.tpm_state_root = "/app/runtime/tpm_state"
+        self.tpm_state_root = os.getenv("ZTA_TPM_STATE_ROOT", "/app/runtime/tpm_state")
         insecure = run_metadata.get("insecure", False) or os.getenv("ZTA_INSECURE_MODE", "false").lower() == "true"
         self.tpm_engine = TPMVerifier(logger=logger, insecure_mode=insecure)
         self.trust_db = TrustDatabase(logger=logger)

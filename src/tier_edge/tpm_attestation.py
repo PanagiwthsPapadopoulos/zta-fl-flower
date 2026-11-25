@@ -9,6 +9,8 @@ import time
 import traceback
 from typing import Optional
 
+from src.shared.security.tpm_transport import container_transport_enabled, request_tpm
+
 
 class TPMAttestation:
     """A hardware abstraction layer for TPM 2.0 cryptographic provisioning and zero-trust attestation quote generation."""
@@ -18,8 +20,9 @@ class TPMAttestation:
         self.insecure_mode = insecure_mode or os.getenv("ZTA_INSECURE_MODE", "false").lower() == "true"
         self.tcti = (tcti or os.getenv("TPM2TOOLS_TCTI", "")).strip()
         self.current_round = current_round
+        self.container_transport = container_transport_enabled() and not self.insecure_mode
 
-        if not self.insecure_mode and self.tcti:
+        if not self.insecure_mode and self.tcti and not self.container_transport:
             self.logger.info("TPMEngine: Hardware context detected. Initializing prover configuration.", extra={"round": self.current_round})
             self._provision_ak()
         else:
@@ -105,6 +108,9 @@ class TPMAttestation:
         try:
             if self.insecure_mode:
                 return {"status": "insecure_bypass", "IDi": software_label, "pcr_hash": "dummy_hash", "signature": "dummy_sig"}
+
+            if self.container_transport:
+                return request_tpm("quote", software_label, nonce=nonce, round_num=round_num)
 
             fog_num, edge_num = None, None
             m = re.search(r'\[EDGE (\d+)_(\d+)\]', software_label)
