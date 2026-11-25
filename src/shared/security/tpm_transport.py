@@ -22,6 +22,19 @@ def edge_identity(value):
     return int(match[1]), int(match[2])
 
 
+def diagnostic_stderr(value, secrets=()):
+    """Bound log text, remove terminal escapes and redact supplied request values."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value or "")
+    for secret in secrets:
+        if isinstance(secret, dict):
+            value = diagnostic_stderr(value, secret.values())
+        elif isinstance(secret, str) and secret:
+            value = value.replace(secret, "[redacted]")
+    return " ".join(value.split())[-2000:]
+
+
 def request_tpm(action, identity, **arguments):
     prefix = os.environ["ZTA_TPM_CONTAINER_PREFIX"]
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", prefix):
@@ -30,8 +43,13 @@ def request_tpm(action, identity, **arguments):
     command = ["docker", "exec", "-i", "-e", "ZTA_TPM_CONTAINER_PREFIX=",
                "-e", "ZTA_INSECURE_MODE=false", f"{prefix}{fog}-{edge}",
                "python3", "-m", "src.shared.security.tpm_transport", str(fog), str(edge)]
-    result = subprocess.run(command, input=json.dumps({"action": action, **arguments}, allow_nan=False),
-                            text=True, capture_output=True, check=True, timeout=60)
+    try:
+        result = subprocess.run(command, input=json.dumps({"action": action, **arguments}, allow_nan=False),
+                                text=True, capture_output=True, check=True, timeout=60)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        detail = diagnostic_stderr(exc.stderr, arguments.values())
+        reason = f"exit {exc.returncode}" if isinstance(exc, subprocess.CalledProcessError) else "timeout after 60s"
+        raise RuntimeError(f"TPM {action} for edge_{fog}_{edge}: {reason}; stderr: {detail or '(empty)'}") from None
     response = json.loads(result.stdout)
     if not isinstance(response, dict) or "result" not in response:
         raise ValueError("Invalid TPM container response")

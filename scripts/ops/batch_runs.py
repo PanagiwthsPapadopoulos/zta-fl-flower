@@ -53,8 +53,9 @@ def topology(config):
     return custom or [config["uniform_edges_per_fog"]] * config["num_fogs"]
 
 
-def plan_queue(root, queue):
+def plan_queue(root, queue, *, fixed_topology=True):
     baseline = {name: read_yaml(root / "config" / name) for name in CONFIG_FILES}
+    base_topology = topology(merged(baseline))
     runs = []
     for folder in sorted(queue.iterdir()):
         if not folder.is_dir() or folder.name.startswith("."):
@@ -69,6 +70,8 @@ def plan_queue(root, queue):
         if not overrides:
             continue
         config = merged(configs)
+        if fixed_topology and topology(config) != base_topology:
+            raise BatchError(f"{folder}: topology differs from the provisioned baseline network")
         runs.append({"name": folder.name, "configs": configs, "overrides": overrides,
                      "target_rounds": config["num_rounds"], "topology": topology(config), "status": "PENDING"})
     return baseline, runs
@@ -78,6 +81,27 @@ def progress(root, attempt):
     value = read_json(root / "results" / attempt / "batch_progress.json")
     number = value.get("completed_round", -1)
     return number if value.get("attempt") == attempt and type(number) is int else -1
+
+
+def completion_evidence(root, attempt, target_rounds):
+    """Audit saved output without changing training or security decisions."""
+    folder = root / "results" / attempt
+    lifecycle = read_json(folder / "batch_lifecycle.json")
+    if lifecycle.get("attempt") != attempt or lifecycle.get("status") != "COMPLETED":
+        return "INCOMPLETE", "Missing matching COMPLETED lifecycle"
+    if progress(root, attempt) != target_rounds:
+        return "INCOMPLETE", "Final saved round does not match requested rounds"
+    checkpoint = folder / "global_model.pt"
+    if not checkpoint.is_file() or checkpoint.stat().st_size == 0:
+        return "INCOMPLETE", "Final checkpoint is missing or empty"
+    missing = 0
+    for path in (folder / "trustdb").glob("fog_*_state.json"):
+        for record in read_json(path).get("rounds", {}).values():
+            missing += sum(outcome.get("reason") in {"missing_response", "client_training_crash"}
+                           for outcome in record.get("attestation_outcomes", {}).values())
+    if missing:
+        return "DEGRADED", f"Completed with {missing} missing responses or client training crashes"
+    return "SUCCESS", "Completed lifecycle, requested rounds and nonempty checkpoint verified"
 
 
 def stop_process(child, grace):
@@ -201,6 +225,9 @@ def main(argv=None):
             state = {"version": 3, "runtime": args.runtime, "created_at": stamp(), "active": None,
                      "queue": str(args.queue.resolve()), "runs": runs,
                      "limits": {key: getattr(args, key) for key in ("boot_timeout", "prepare_timeout", "stall_timeout", "run_timeout", "shutdown_timeout", "poll_interval")}}
+        baseline_topology = topology(merged({name: read_yaml(ROOT / "config" / name) for name in CONFIG_FILES}))
+        if any(entry["topology"] != baseline_topology for entry in state["runs"] if entry["status"] == "PENDING"):
+            raise BatchError("Pending topology differs from the provisioned baseline network")
         if args.dry_run:
             print(json.dumps(state, indent=2))
             return 0

@@ -66,6 +66,34 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(baseline, self.baseline)
 
 
+    def test_topology_mismatch_is_rejected_before_boot(self):
+        self.add_run("01", "network.yaml", {"num_fogs": 3})
+        with self.assertRaisesRegex(batch.BatchError, "topology differs"):
+            batch.plan_queue(self.root, self.queue)
+
+    def test_resume_revalidates_topology_against_network_to_be_booted(self):
+        batch.atomic_json(self.folder / "batch.json", {"runs":[{"status":"PENDING","topology":[3]}]})
+        with patch.object(batch, "ROOT", self.root), patch.object(batch, "supervise") as boot:
+            self.assertEqual(batch.main(["--resume", str(self.folder), "--dry-run"]), 2)
+        boot.assert_not_called()
+
+    def test_completion_rejects_wrong_round_empty_checkpoint_and_reports_crashes(self):
+        folder = self.folder
+        batch.atomic_json(folder/"batch_lifecycle.json", {"attempt":"test", "status":"COMPLETED"})
+        batch.atomic_json(folder/"batch_progress.json", {"attempt":"test", "completed_round":1})
+        (folder/"global_model.pt").write_bytes(b"checkpoint")
+        self.assertEqual(batch.completion_evidence(self.root,"test",2)[0], "INCOMPLETE")
+        batch.atomic_json(folder/"batch_progress.json", {"attempt":"test", "completed_round":2})
+        (folder/"global_model.pt").write_bytes(b"")
+        self.assertEqual(batch.completion_evidence(self.root,"test",2)[0], "INCOMPLETE")
+        (folder/"global_model.pt").write_bytes(b"checkpoint")
+        batch.atomic_json(folder/"trustdb/fog_1_state.json", {"rounds":{"1":{
+            "attestation_outcomes":{"a":{"reason":"quarantined"}}}}})
+        self.assertEqual(batch.completion_evidence(self.root,"test",2)[0], "SUCCESS")
+        batch.atomic_json(folder/"trustdb/fog_1_state.json", {"rounds":{"1":{
+            "attestation_outcomes":{"a":{"reason":"missing_response"}}}}})
+        self.assertEqual(batch.completion_evidence(self.root,"test",2)[0], "DEGRADED")
+
     def test_host_launches_boot_and_worker_once_without_process_inventory(self):
         session = self.root / 'results/batch_archives/session'
         state = dict(runtime='apptainer', infrastructure_id='infra', limits=LIMITS)

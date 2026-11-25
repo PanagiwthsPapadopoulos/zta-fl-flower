@@ -2,7 +2,7 @@
 
 The batch runner boots one simulation environment and one Flower coordinator, then submits experiments one at a time. It uses Flower's run status to decide when to submit the next bundle, plus boot, preparation, stall, run and stop timeouts.
 
-There are no batch process inventories, PID-name checks, TPM health gates, source-fingerprint gates, workspace locks, stale-session gates or checkpoint-completeness gates. TPM attestation, SHAP, trust filtering and the training application's security policies remain enabled. The paper queue still contains all 100 clients and uses the 180-second TPM freshness window.
+There are no batch process inventories, PID-name checks, TPM health gates, source-fingerprint gates, workspace locks, stale-session gates. TPM attestation, SHAP, trust filtering and the training application's security policies remain enabled. The paper queue still contains all 100 clients and uses the 180-second TPM freshness window.
 
 ## Run
 
@@ -19,7 +19,7 @@ python3 scripts/ops/batch_runs.py \
 
 Use `--runtime docker` for the Docker simulation. On HPC, use the existing `.batch-python` copy if host Python lacks PyYAML: prefix the command with `PYTHONPATH="$PWD/.batch-python:$PWD"`. No new packages are required. `--dry-run` prints the merged plan without launching anything; it is not a validation suite.
 
-Start one batch in the workspace with the previous simulation stopped. The runner no longer detects competing supervisors or recovers old live processes. Keep the queue's topology consistent with `config/network.yaml`, which boots the TPM environment.
+Start one batch in the workspace with the previous simulation stopped. The runner no longer detects competing supervisors or recovers old live processes. The runner rejects queue topologies that differ from `config/network.yaml`, which boots the TPM environment.
 
 ## Configuration and sequence
 
@@ -27,7 +27,7 @@ Experiment directories are read in sorted name order. Each starts from the same 
 
 The frozen plan is stored in `results/batch_archives/<session>/batch.json`. Each experiment gets a unique `run_name` and `batch_attempt`. Its resolved YAML files go to `runtime/batch/config/` and its attempt archive. `CONFIG_PATH` points artifact preparation and training at those files. Workspace `config/` files are not rewritten.
 
-The worker prepares the dataset, submits a Flower application bundle, and polls its run ID. `finished:completed` is recorded as `SUCCESS`; other finished outcomes as `INCOMPLETE`. Either allows the next experiment. `SUCCESS` means Flower reported completion; the batch runner does not audit rounds or checkpoints. CPU/GPU scheduling settings come from the local federation in `pyproject.toml`; all configured clients are passed to Flower.
+The worker prepares the dataset, submits a Flower application bundle, and polls its run ID. `SUCCESS` requires Flower completion, a matching completed lifecycle, the final requested saved round and a nonempty final checkpoint. Missing evidence gives `INCOMPLETE`; persisted missing responses or client training crashes give `DEGRADED`. These outcomes allow the next experiment but cause a nonzero batch exit. Security rejections and quarantines alone do not count as missing responses. Completion checks do not certify model accuracy or checkpoint contents. CPU/GPU scheduling settings come from the local federation in `pyproject.toml`; all configured clients are passed to Flower.
 
 A preparation failure is recorded and the queue proceeds. An ambiguous submission error stops the worker rather than resubmitting a potentially accepted bundle. Transient status-query failures are retried within the existing run/stall timeouts.
 

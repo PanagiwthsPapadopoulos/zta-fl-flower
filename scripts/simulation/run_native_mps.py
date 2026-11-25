@@ -114,6 +114,32 @@ def wait_superlink(process, address):
     raise TimeoutError("Native SuperLink did not become ready")
 
 
+def cleanup_run(processes, compose, run_dir, status):
+    """Attempt every cleanup step and persist the outcome even if Docker fails."""
+    errors = []
+    for process in reversed(processes):
+        try:
+            stop_process(process)
+        except Exception as exc:
+            errors.append(f"process shutdown: {exc}")
+    try:
+        with (run_dir / "tpm.log").open("w") as log:
+            subprocess.run(compose + ["logs", "--no-color"], stdout=log, stderr=subprocess.STDOUT,
+                           check=True, timeout=30)
+    except Exception as exc:
+        errors.append(f"TPM logs: {exc}")
+    try:
+        subprocess.run(compose + ["down"], check=True, timeout=60)
+    except Exception as exc:
+        errors.append(f"TPM shutdown: {exc}")
+    status["cleanup_errors"] = errors
+    from src.shared.utils.simulation_lifecycle import atomic_json
+    atomic_json(run_dir / "native_status.json", status)
+    for error in errors:
+        print(f"Cleanup warning: {error}", file=sys.stderr)
+    return not errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--smoke-test", action="store_true",
@@ -214,12 +240,9 @@ def main():
         status.update(status="FAILED", error=str(exc))
         raise
     finally:
-        for process in reversed(processes):
-            stop_process(process)
-        with (run_dir / "tpm.log").open("w") as log:
-            subprocess.run(compose + ["logs", "--no-color"], stdout=log, stderr=subprocess.STDOUT, timeout=30)
-        subprocess.run(compose + ["down"], check=False, timeout=60)
-        (run_dir / "native_status.json").write_text(json.dumps(status, indent=2) + "\n")
+        cleaned = cleanup_run(processes, compose, run_dir, status)
+        if not cleaned and status["status"] == "COMPLETED":
+            raise RuntimeError("Training completed but cleanup failed; inspect native_status.json")
 
 
 if __name__ == "__main__":

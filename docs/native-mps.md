@@ -64,3 +64,8 @@ Regression tests:
 
 The MPS-specific test skips when MPS is unavailable. The live `--smoke-test` runs
 the actual Flower CLI and TPM containers rather than mocks.
+
+TPM transport failures include bounded, redacted container stderr. Cleanup attempts
+process shutdown, TPM log collection and container removal independently.
+`native_status.json` records `cleanup_errors`; a completed training run with cleanup
+errors exits nonzero so an unattended queue cannot silently continue.

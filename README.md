@@ -12,7 +12,7 @@ Read the [architecture parity report](docs/architecture-parity.md) for the relat
 | [Deployment](docs/deployment.md) | Run the distributed three-tier network with Docker or Apptainer |
 | [Simulation](docs/simulation.md) | Run the Ray-based simulation and external software TPMs |
 | [Native Apple Silicon](docs/native-mps.md) | Train with Flower/MPS on macOS and TPM-only Docker containers |
-| [Overnight batches](docs/batch-runs.md) | Run sequential experiments on one persistent simulation environment |
+| [Overnight batches](docs/batch-runs.md) | Run sequential experiments with topology and completion checks |
 | [Dataset preparation](docs/dataset-preparation.md) | Download, clean and select full datasets; understand preprocessing choices |
 | [Testing](docs/testing.md) | Run component tests and interpret their evidence and limits |
 | [Preflight runs](docs/preflight.md) | Exact live test settings and acceptance criteria before long experiments |

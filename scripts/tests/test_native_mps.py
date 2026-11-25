@@ -86,6 +86,18 @@ class TPMTransportTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 edge_identity(value)
 
+    def test_failed_command_exposes_bounded_redacted_stderr(self):
+        failure = subprocess.CalledProcessError(1, ["docker"], stderr="x" * 3000 + "\x1b[31m TPM busy secret-nonce\n")
+        with patch.dict(os.environ, ZTA_TPM_CONTAINER_PREFIX="test-tpm-"), \
+             patch("src.shared.security.tpm_transport.subprocess.run", side_effect=failure):
+            with self.assertRaises(RuntimeError) as caught:
+                request_tpm("quote", "edge_1_2", nonce="secret-nonce")
+        text = str(caught.exception)
+        self.assertIn("TPM busy [redacted]", text)
+        self.assertNotIn("secret-nonce", text)
+        self.assertNotIn("\x1b", text)
+        self.assertLess(len(text), 2100)
+
     def test_native_attestation_does_not_provision_on_host(self):
         with patch.dict(os.environ, ZTA_TPM_CONTAINER_PREFIX="test-tpm-", ZTA_INSECURE_MODE="false"), \
              patch.object(TPMAttestation, "_provision_ak") as provision, \
@@ -113,6 +125,24 @@ class TPMTransportTests(unittest.TestCase):
 
 
 class NativeLauncherTests(unittest.TestCase):
+    def test_cleanup_attempts_down_and_writes_status_after_prior_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            status = {"status":"COMPLETED"}
+            with patch.object(launcher, "stop_process", side_effect=OSError("gone")), \
+                 patch.object(launcher.subprocess, "run", side_effect=[subprocess.TimeoutExpired("logs",30), subprocess.CompletedProcess([],0)]) as command:
+                self.assertFalse(launcher.cleanup_run([object()], ["docker","compose"], run, status))
+            self.assertEqual(command.call_args_list[-1].args[0][-1], "down")
+            saved = json.loads((run/"native_status.json").read_text())
+            self.assertEqual(saved["status"], "COMPLETED")
+            self.assertEqual(len(saved["cleanup_errors"]), 2)
+
+    def test_cleanup_records_failed_container_shutdown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(launcher.subprocess, "run", side_effect=[subprocess.CompletedProcess([],0), subprocess.CalledProcessError(1,"down")]):
+                self.assertFalse(launcher.cleanup_run([], ["docker"], Path(directory), {"status":"FAILED"}))
+            self.assertIn("TPM shutdown", json.loads((Path(directory)/"native_status.json").read_text())["cleanup_errors"][0])
+
     def test_config_artifacts_and_containers_are_isolated(self):
         before = {p: p.read_bytes() for p in (ROOT / "config").glob("*.yaml")}
         with tempfile.TemporaryDirectory() as directory:

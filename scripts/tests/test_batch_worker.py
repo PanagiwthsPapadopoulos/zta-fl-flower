@@ -102,9 +102,9 @@ class WorkerTests(unittest.TestCase):
         cls.return_value.close.assert_called_once()
         self.assertEqual([r['status'] for r in batch.read_json(self.session/'batch.json')['runs']],['CANCELLED','PENDING'])
 
-    def test_flower_terminal_status_controls_completion_without_checkpoint_gate(self):
+    def test_flower_completion_requires_saved_evidence(self):
         (self.root/'pyproject.toml').write_text('[tool.flwr.federations.local.options.backend.client-resources]\nnum-cpus=2\nnum-gpus=0.0\n')
-        for row_status, complete, expected in [('finished:failed',True,'INCOMPLETE'),('finished:completed',False,'SUCCESS'),('finished:completed',True,'SUCCESS')]:
+        for row_status, complete, expected in [('finished:failed',True,'INCOMPLETE'),('finished:completed',False,'INCOMPLETE'),('finished:completed',True,'SUCCESS')]:
             with self.subTest(status=row_status,complete=complete):
                 folder=self.session/row_status.replace(':','_')/str(complete)
                 folder.mkdir(parents=True)
@@ -113,6 +113,12 @@ class WorkerTests(unittest.TestCase):
                 child=Mock(returncode=0)
                 child.poll.return_value=0
                 entry=dict(self.state['runs'][0],attempt='attempt')
+                evidence = self.root/'results'/'attempt'
+                shutil.rmtree(evidence, ignore_errors=True)
+                if complete:
+                    batch.atomic_json(evidence/'batch_lifecycle.json', {'attempt':'attempt','status':'COMPLETED'})
+                    batch.atomic_json(evidence/'batch_progress.json', {'attempt':'attempt','completed_round':2})
+                    (evidence/'global_model.pt').write_bytes(b'checkpoint')
                 with patch.object(worker.subprocess,'Popen',return_value=child):
                     status,_=worker.run_experiment(self.root,folder,entry,LIMITS,flower,Mock(),lambda:False)
                 self.assertEqual(status,expected)

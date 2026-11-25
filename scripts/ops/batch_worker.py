@@ -20,7 +20,7 @@ import uuid
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.ops.batch_runs import BatchError, Cancelled, stop_process, merged, read_json, progress
+from scripts.ops.batch_runs import BatchError, Cancelled, stop_process, merged, read_json, progress, completion_evidence
 from src.shared.utils.simulation_lifecycle import atomic_json, stamp
 
 
@@ -209,8 +209,9 @@ def run_experiment(root, folder, entry, limits, flower, update, cancelled):
                     atomic_json(folder / 'flower_status.json', row)
                     if row['status'].startswith('finished:'):
                         finished = True
-                        status = 'SUCCESS' if row['status'] == 'finished:completed' else 'INCOMPLETE'
-                        return status, f"Flower {row['status']}: {row.get('status-details', '')}"
+                        if row['status'] == 'finished:completed':
+                            return completion_evidence(root, entry['attempt'], entry['target_rounds'])
+                        return 'INCOMPLETE', f"Flower {row['status']}: {row.get('status-details', '')}"
             except (BatchError, subprocess.TimeoutExpired, ValueError, OSError) as exc:
                 (folder / 'status_error.txt').write_text(str(exc))
             if time.monotonic() - start >= limits['run_timeout']:
