@@ -125,8 +125,8 @@ def main():
     def interrupted(signum, frame):
         raise KeyboardInterrupt("Native run interrupted")
     signal.signal(signal.SIGTERM, interrupted)
-    if args.workers < 1:
-        parser.error("workers must be positive")
+    if not 1 <= args.workers <= (os.cpu_count() or 1):
+        parser.error("workers must be between 1 and the number of available CPU cores")
     if sys.platform != "darwin":
         parser.error("This launcher requires native macOS")
     import torch
@@ -191,8 +191,10 @@ def main():
                                       cwd=run_dir, env=env, stdout=server_log, stderr=subprocess.STDOUT, start_new_session=True)
             processes.append(server)
             wait_superlink(server, address)
+            cpus_per_worker = min(2, (os.cpu_count() or 1) // args.workers)
             resources = (f"num-supernodes={total} client-resources-num-gpus=0 "
-                         f"client-resources-num-cpus=2 init-args-num-cpus={2 * args.workers} init-args-num-gpus=0")
+                         f"client-resources-num-cpus={cpus_per_worker} "
+                         f"init-args-num-cpus={cpus_per_worker * args.workers} init-args-num-gpus=0")
             run = subprocess.Popen([str(bin_dir / "flwr"), "run", str(ROOT), "native", "--stream",
                                     "--federation-config", resources,
                                     "--run-config", f'mode="sim" tier="cloud" min_clients={total}'],

@@ -43,7 +43,9 @@ every Flower worker and survive the CPU inference copies. Automatic MPS fallback
 is disabled so other unsupported operations fail visibly.
 
 One Ray client worker is used by default. `--workers 2` permits two concurrent
-clients, sharing the Mac's memory and GPU. Ray GPU reservations remain zero;
+clients, sharing the Mac's memory and GPU. Up to one worker per CPU core is supported;
+CPU reservations adjust so Ray never advertises more cores than the host has.
+Ray GPU reservations remain zero;
 PyTorch selects MPS inside each worker. The existing Docker/NVIDIA and Apptainer
 launchers do not set the native flags and retain their original behavior.
 
