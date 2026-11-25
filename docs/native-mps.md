@@ -69,3 +69,72 @@ TPM transport failures include bounded, redacted container stderr. Cleanup attem
 process shutdown, TPM log collection and container removal independently.
 `native_status.json` records `cleanup_errors`; a completed training run with cleanup
 errors exits nonzero so an unattended queue cannot silently continue.
+
+## Sequential MPS batches
+
+Use the same experiment-folder format as the Docker/Apptainer queue. Each entry
+starts from a frozen copy of the repository's three YAML configs, then applies
+that experiment's overrides. Source files and archived experiment configs stay
+unchanged. Run from the repository root:
+
+```bash
+# Inspect all resolved configurations without starting training or Docker.
+.venv/bin/python scripts/ops/batch_runs_mps.py \
+  --queue experiments_archived/paper_80 --workers 2 --dry-run
+
+# Run the queue sequentially with native MPS and TPM-only Docker.
+.venv/bin/python scripts/ops/batch_runs_mps.py \
+  --queue experiments_archived/paper_80 --workers 2
+```
+
+One worker is the default. More workers share unified memory and the same GPU;
+maximum concurrency can increase swap and make training slower. Choose the
+worker count for the host; it does not change the model, batch size, epochs,
+seeds, aggregation or security policies. This command runs every configuration
+in the selected queue, including entries previously run outside this batch.
+Use a separate queue folder containing only the desired configurations to
+exclude earlier experiments or divide independent experiments among machines.
+
+Each experiment starts a fresh native launcher, Flower/Ray processes and TPM
+containers. This deliberately avoids retaining worker/GPU state between runs.
+Different topologies are supported because each experiment provisions its own
+TPMs. Raw data is symlinked, but derived artifacts are prepared separately for
+each run. Allow disk space for retained artifacts and checkpoints.
+
+The printed batch archive is `results/native_batch_archives/<session>/`. Its
+`batch.json` stores the frozen configurations, settings, statuses, completed
+rounds and paths to the native runs. `attempts/<attempt>/` contains the config
+snapshot, status and `launcher.log`. Full native logs and results remain under
+`runtime/native-mps/<attempt>/`.
+
+`SUCCESS` requires a zero launcher exit, confirmed cleanup, completed lifecycle,
+the requested final saved round and a nonempty checkpoint. Persisted missing
+responses or client training crashes give `DEGRADED`; security exclusions alone
+do not. The queue stops on any non-success result. It does not change or retry
+training automatically.
+
+```bash
+# Resume pending entries, preserving successes and recorded settings.
+.venv/bin/python scripts/ops/batch_runs_mps.py \
+  --resume results/native_batch_archives/<session>
+
+# Explicitly retry unsuccessful entries from round one, retaining attempt history.
+.venv/bin/python scripts/ops/batch_runs_mps.py \
+  --resume results/native_batch_archives/<session> --retry-failed
+```
+
+Resume uses the saved settings/configuration and the current source code and
+Python environment. Keep the same revision and dependencies for reproducibility;
+CLI worker/timeout/image/smoke settings apply when creating a new batch.
+A session lock prevents two supervisors from executing the same archive.
+Ctrl+C or `--run-timeout` (default 172800 seconds, including preparation) requests
+native cleanup. `--shutdown-timeout` defaults to 180 seconds. If cleanup cannot
+be confirmed, the queue refuses to proceed or retry: inspect the native status,
+processes and generated Compose file before recovery. Hard-killed supervisors
+are not automatically recovered when their launcher's cleanup is unknown.
+
+For an explicit integration smoke test, select a small queue and add
+`--smoke-test`. Each entry then uses the existing two-round, two-client smoke
+profile; the archive records this setting. Do not use smoke results as full
+experiment results. `--run-dir` on the single-run launcher is used internally to
+assign unique output paths and refuses an existing directory.

@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import socket
@@ -145,6 +146,7 @@ def main():
     parser.add_argument("--smoke-test", action="store_true",
                         help="Two rounds, one Fog/two Edges, PGD training; changes only the run's config copy")
     parser.add_argument("--config-dir", type=Path, default=ROOT / "config")
+    parser.add_argument("--run-dir", type=Path, help="New, unique output directory (used by the native batch runner)")
     parser.add_argument("--workers", type=int, default=1, help="Concurrent Ray client workers (default: 1)")
     parser.add_argument("--tpm-image", default="panagiotispapadopoulos/zta-edge-node:latest")
     args = parser.parse_args()
@@ -165,7 +167,10 @@ def main():
     subprocess.run(["docker", "info"], check=True, stdout=subprocess.DEVNULL)
     subprocess.run(["docker", "image", "inspect", args.tpm_image], check=True, stdout=subprocess.DEVNULL)
     run_name = "native_" + datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
-    run_dir = ROOT / "runtime" / "native-mps" / run_name
+    run_dir = args.run_dir.resolve() if args.run_dir else ROOT / "runtime" / "native-mps" / run_name
+    run_name = run_dir.name
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_name):
+        parser.error("run-dir name must contain only letters, numbers, underscores or hyphens")
     run_dir.mkdir(parents=True)
     configs, topology = prepare_run(run_dir, args.config_dir.resolve(), args.smoke_test)
     total = sum(topology)

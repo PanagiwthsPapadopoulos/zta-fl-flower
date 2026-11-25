@@ -162,3 +162,12 @@ The suite covers shared attack selection, both client adapters, zero-augmentatio
 ## What remains outside this evidence
 
 Real TPM command execution and provisioning, TLS and deployed IPC/RPC, process crashes/restarts, concurrent GPU workers, CUDA/MPS numerical behavior, full-dataset training, five-seed statistical results, realistic attack effectiveness and target-device performance require separate validation. Missing token-envelope encryption, signed firmware/PCR-update manifests, live perception and protocol feature skew are documented gaps, not functionality supplied by this suite.
+
+## Native batch control
+
+`test_batch_mps.py` checks frozen configuration overlays, isolated sequential
+subprocesses, failure/timeout/cancellation, session locking, completion evidence
+and explicit retries. Subprocess fixtures are not ML integration tests.
+`test_native_mps.py` checks MPS model equivalence, TPM error diagnostics and cleanup
+failure handling. The explicit two-entry `batch_runs_mps.py --smoke-test` path
+exercises actual Flower/MPS training and Docker TPMs; it is not run by default.
