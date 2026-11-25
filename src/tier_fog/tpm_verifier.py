@@ -8,6 +8,9 @@ import uuid
 import time
 import re
 import traceback
+from pathlib import Path
+
+from src.shared.security.tpm_transport import container_transport_enabled, request_tpm
 
 
 class TPMVerifier:
@@ -34,6 +37,13 @@ class TPMVerifier:
         try:
             if self.insecure_mode:
                 return True
+
+            if container_transport_enabled():
+                return request_tpm(
+                    "verify", Path(public_key_path).parent.name, token=token,
+                    expected_nonce=expected_nonce, round_num=round_num,
+                    expected_pcr=expected_pcr, max_age_seconds=max_age_seconds,
+                ) is True
 
             if not isinstance(token, dict) or token.get("status") != "attested":
                 self.logger.warning(f"[TPM-VERIFY] Edge Node sent corrupted/error token: {token}", extra={"round": round_num})

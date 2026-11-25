@@ -1,28 +1,77 @@
-# Overnight simulation batches
+# Sequential simulation batches
 
-[batch_runs.py](../scripts/ops/batch_runs.py) supervises one simulation at a time using the existing Docker or Apptainer launchers. It does not run deployment mode. The host needs Python 3.9 or later and PyYAML, plus the selected container runtime and the usual simulation prerequisites. Machine-learning dependencies remain inside the simulation images.
+The batch runner boots one simulation environment and one Flower coordinator, then submits experiments one at a time. It uses Flower's run status to decide when to submit the next bundle, plus boot, preparation, stall, run and stop timeouts.
 
-## How to use
+There are no batch process inventories, PID-name checks, TPM health gates, source-fingerprint gates, workspace locks, stale-session gates. TPM attestation, SHAP, trust filtering and the training application's security policies remain enabled. The paper queue still contains all 100 clients and uses the 180-second TPM freshness window.
 
-**Start only the batch runner. Do not start `boot_network_sim_*.sh` or `deploy_code_sim_*.sh` yourself.** The runner calls both scripts automatically for each queued run. For Docker, the Docker daemon must be running; the project's simulation network must be stopped. For Apptainer, use the execution host with Apptainer installed and stop any existing standalone simulation first.
+## Run
 
-1. Set `config/` to the baseline settings shared by the experiments, including the fixed network topology and intended dataset path.
-2. Create one folder per experiment under `experiments_queue/`. Put its YAML overrides inside that folder, as shown in the next section. Folder names determine execution order.
-3. From the repository root, validate the queue without starting anything:
+From the repository root, using Python with the existing PyYAML dependency available:
 
-   ```sh
-   python3 scripts/ops/batch_runs.py --runtime docker --dry-run
-   ```
+```sh
+python3 scripts/ops/batch_runs.py \
+  --runtime apptainer \
+  --queue experiments_archived/paper_80 \
+  --prepare-timeout 43200 \
+  --stall-timeout 10800 \
+  --run-timeout 165600
+```
 
-4. Start the batch:
+Use `--runtime docker` for the Docker simulation. On HPC, use the existing `.batch-python` copy if host Python lacks PyYAML: prefix the command with `PYTHONPATH="$PWD/.batch-python:$PWD"`. No new packages are required. `--dry-run` prints the merged plan without launching anything; it is not a validation suite.
 
-   ```sh
-   python3 scripts/ops/batch_runs.py --runtime docker
-   ```
+Start one batch in the workspace with the previous simulation stopped. The runner no longer detects competing supervisors or recovers old live processes. The runner rejects queue topologies that differ from `config/network.yaml`, which boots the TPM environment.
 
-   For Apptainer, replace `docker` with `apptainer` in both commands. Keep the session alive for the overnight run.
+## Configuration and sequence
 
-The terminal prints the batch archive location, each run's identity and its outcome. The archive's `batch.json` shows the queue status; each attempt's `boot.log`, `dispatch.log` and `status.json` provide startup diagnostics and the outcome reason. Ctrl+C stops the batch through its cleanup path. Use the recovery instructions below to continue pending entries later.
+Experiment directories are read in sorted name order. Each starts from the same snapshot of `config/network.yaml`, `config/training.yaml` and `config/security.yaml`; corresponding files in that experiment directory override the baseline. Partial and complete YAML files both work. Extra files are ignored. Missing values never inherit from the previous experiment. The runner does not enforce a configuration schema.
+
+The frozen plan is stored in `results/batch_archives/<session>/batch.json`. Each experiment gets a unique `run_name` and `batch_attempt`. Its resolved YAML files go to `runtime/batch/config/` and its attempt archive. `CONFIG_PATH` points artifact preparation and training at those files. Workspace `config/` files are not rewritten.
+
+The worker prepares the dataset, submits a Flower application bundle, and polls its run ID. `SUCCESS` requires Flower completion, a matching completed lifecycle, the final requested saved round and a nonempty final checkpoint. Missing evidence gives `INCOMPLETE`; persisted missing responses or client training crashes give `DEGRADED`. These outcomes allow the next experiment but cause a nonzero batch exit. Security rejections and quarantines alone do not count as missing responses. Completion checks do not certify model accuracy or checkpoint contents. CPU/GPU scheduling settings come from the local federation in `pyproject.toml`; all configured clients are passed to Flower.
+
+A preparation failure is recorded and the queue proceeds. An ambiguous submission error stops the worker rather than resubmitting a potentially accepted bundle. Transient status-query failures are retried within the existing run/stall timeouts.
+
+## Timeouts and stopping
+
+- `--boot-timeout`: maximum wait for network provisioning, and separately for Flower's control API (default 1800 seconds).
+- `--prepare-timeout`: maximum dataset preparation time (7200).
+- `--stall-timeout`: maximum time without a newly saved round during training (3600).
+- `--run-timeout`: total experiment duration, including preparation (25200).
+- `--shutdown-timeout`: wait for Flower to report a stopped run, and process termination allowance (120).
+- `--poll-interval`: status polling interval (5).
+
+On a run/stall timeout or cancellation, the worker requests `flwr stop` and waits for Flower's finished status. If that stop times out, the queue ends without submitting the next bundle. This is the handover condition, not a process inspection. Training's YAML round/RPC timeouts remain separate.
+
+Ctrl+C requests cancellation. Final shutdown signals the process groups launched by the runner; Docker also tears down its Compose environment. There is no independent audit of detached processes. Do not start a second invocation while the first is stopping.
+
+## Logs and resume
+
+The terminal prints the batch archive and worker-log path. The worker log records experiment starts and outcomes. `results/batch_archives/active_batch.json` points to the latest session.
+
+- `<session>/infra_<id>/boot.log`: network provisioning.
+- `<session>/infra_<id>/worker.log`: queue execution and errors.
+- `<session>/infra_<id>/superlink-console.log`: Flower coordinator output.
+- `<session>/attempts/<attempt>/`: resolved configuration, preparation log, Flower submission/status, training log and available Ray logs.
+- `results/<attempt>/`: training metrics and checkpoints.
+- `logs/system/run_cloud.log`: current training stream.
+
+Private Flower/Ray temporary files live under `/tmp/zta-batch-*` inside the runtime. Ray logs are archived after Flower reports a finished run; temporary files are removed during normal cleanup. Archival errors are reported without blocking the next bundle. Runtime/TPM files remain in the workspace and are reused; they are not moved into a full infrastructure snapshot. Hard termination can leave temporary files.
+
+To resume pending entries after the previous invocation has stopped:
+
+```sh
+python3 scripts/ops/batch_runs.py --resume results/batch_archives/<session>
+```
+
+Add `--retry-interrupted` to restart interrupted/cancelled experiments from round 1. Previously successful or failed entries are not automatically rerun. Resume uses the saved configurations and timeouts with the current code; it performs no fingerprint comparison or old-process recovery.
+
+## Development verification
+
+```sh
+python3 -B -m unittest scripts.tests.test_batch_runs scripts.tests.test_batch_worker scripts.tests.test_batch_integration -v
+```
+
+The tests cover configuration inheritance, bundle sequencing, timeout/stop handover and shell dispatch. The integration tests need the existing ML dependencies. An optional small real Flower test is available with `ZTA_FLOWER_SMOKE=1 python3 -B -m unittest scripts.tests.test_batch_worker.RealFlowerSmoke -v`. Local tests do not establish full HPC completion.
 
 ## Archived paper reproduction queue
 
@@ -77,7 +126,7 @@ Checked against the local nine-page article `notes/ZeroTrust_Agentic_Federated_L
 | Training | 100 rounds, 5 local epochs, batch 128, learning rate 0.001; CNN-LSTM; Adam implemented in source | VI.A, Implementation |
 | Topology / label skew | 100 agents, 10 fogs, 3 classes per agent | VI.A |
 | Preprocessing | SMOTE enabled, train/validation/test 70/15/15; 40-dimensional PCA implemented in source | VI.A |
-| Attestation / rollback | Freshness 60 seconds; rollback ratio 0.80 | VI.A and V.B |
+| Attestation / rollback | Freshness **180 seconds** (HPC latency allowance; paper: 60); rollback ratio 0.80 | VI.A and V.B |
 | Trust policy | Source implements initial 0.7, reward 0.02, penalty ×0.5, threshold 0.6, 5 attestations, reset 0.65; these are not YAML keys | V.A |
 | SHAP | Background limit 100; existing GradientSHAP implementation | VI.A, SHAP Configuration |
 | Quantization | 8-bit transport and existing INT8 Edge inference enabled | VI.A; exact 475KB size is not established |
@@ -96,210 +145,3 @@ The following settings make the runnable protocol explicit where the paper is in
 - **Other conventions:** power-law shape 0.4, 10 SHAP explanations, gradient clipping norm 1.0, train-only fitted transforms (`simulate_global_leakage: false`), and no global clipping bounds on PCA coordinates are pinned from the repository configuration, not established by the article.
 
 YAML cannot supply missing protocol/layer feature skew, change the implementation's model parameter count to the reported 487K, guarantee a 475KB model or reproduce the paper's TensorFlow/hardware environment and 3.1-second SHAP timing. The quantity-skew code targets 500–5000 examples but actual allocations depend on available classes. See [architecture parity](architecture-parity.md) for these implementation limits. The Table III/VI discrepancies and deduplication remain the scope decisions in runs.md; identical reported means alone do not prove shared underlying executions.
-
-## Runtime images and local files
-
-The batch runner uses the same [simulation launchers](simulation.md) as individual runs. They mount the local source and scripts into the existing Docker or Apptainer runtime images. Repository-only changes do not require rebuilding or uploading images. Finish or stop a batch before editing its source; the saved fingerprint guards against continuing pending runs with a different implementation.
-
-## Network lifecycle
-
-**The simulation network is torn down after every attempt**, including failed attempts, and recreated for the next one using the same topology. This stops the simulation containers or processes; it does not shut down the host's Docker daemon or uninstall Apptainer.
-
-Each attempt follows this sequence:
-
-```text
-Apply this run's configuration
-  → boot_network_sim_docker.sh / boot_network_sim_apptainer.sh
-  → wait for network health and complete TPM provisioning
-  → deploy_code_sim_docker.sh / deploy_code_sim_apptainer.sh
-      → prepare/reuse dataset artifacts
-      → run the simulation
-  → detect completion, crash or timeout
-  → collect live diagnostics
-  → stop this attempt's simulation processes and network
-  → archive logs, runtime state and results
-  → restore the original configuration
-  → start the next queued run
-```
-
-Fresh TPM state is provisioned for each attempt; the previous state is retained in its archive. Existing container images and datasets remain available between runs. Artifact preparation follows the existing provenance checks rather than unconditionally rebuilding all training tensors. If shutdown or archival cannot be completed safely, the batch stops instead of starting the next run.
-
-## Queue and configuration
-
-Create directories under `experiments_queue/`, ordered by name:
-
-```text
-experiments_queue/
-  01_clean/
-    training.yaml
-    security.yaml
-  02_label_flip/
-    training.yaml
-    security.yaml
-```
-
-Each file is a mapping of keys to override in the corresponding baseline file. Complete files are also accepted. For example, `01_clean/training.yaml` could contain:
-
-```yaml
-dataset: unsw_nb15
-dataset_path: data/unsw_nb15/full_dataset/intrusion_records.csv
-random_seed: 42
-num_rounds: 100
-```
-
-`02_label_flip/security.yaml` could contain:
-
-```yaml
-label_flip_ratio: 0.2
-p_flip: 0.2
-```
-
-Every run starts from the same snapshot of the workspace's `config/`, with its own overrides applied. Values do not carry over from earlier runs. Specify the intended dataset in each run that needs it; an omitted setting inherits the baseline, not the previous queued experiment. Likewise, a clean run must explicitly disable any attack roles enabled in the baseline.
-
-Only `network.yaml`, `training.yaml` and `security.yaml` are supported. Unknown keys, keys placed in the wrong file, invalid round counts, missing/invalid `round_timeout` and changed effective Fog/Edge topology fail validation before any run starts. Other network settings, such as transport quantization and `round_timeout`, may differ. This validation checks the queue contract; it does not replace application-level configuration validation.
-
-Queue names use letters, digits, underscores and hyphens. Each attempt receives a unique generated `run_name`, also recorded as `batch_attempt`, so repeated batches cannot overwrite previous results. A queued `run_name` is retained in the override snapshot but replaced for execution. The complete plan is frozen at batch start; later queue edits do not change that batch.
-
-Review the resolved plan first:
-
-```sh
-python3 scripts/ops/batch_runs.py --runtime docker --dry-run
-```
-
-Start an overnight batch using either runtime:
-
-```sh
-python3 scripts/ops/batch_runs.py --runtime docker
-python3 scripts/ops/batch_runs.py --runtime apptainer
-```
-
-Run only one of those commands at a time. `--queue /path/to/queue` selects a different queue. Paths to scripts and the default queue are resolved from the repository, independently of the invoking shell's working directory. Keep the terminal session alive, for example with an existing terminal multiplexer on the execution host.
-
-The runner owns this workspace's simulation environment while active. Stop any standalone simulation first, and do not run another launcher or edit active configuration/source files during a batch. The supervisor has an exclusive workspace lock, rejects already-active infrastructure, checks for source changes between attempts and restores the baseline configuration after each safely stopped attempt. A fresh simulation network and TPM state are created for each attempt with the same topology; previous runtime state is archived, never silently discarded.
-
-## Completion, failures and time limits
-
-Successful completion requires all of the following for the exact attempt ID:
-
-1. The simulation `ServerApp` returned normally and wrote `batch_lifecycle.json` with `COMPLETED`.
-2. Its own metrics file contains every requested round, with matching run identity and round count.
-3. The final saved-round marker exists and the final model checkpoint is nonempty. The marker is written after metrics and checkpoint writes finish.
-4. The foreground simulation launcher exited with code zero.
-
-An arbitrary new JSON file, the appearance of a round number in a log, or successful background dispatch is insufficient. Operational completion does not assert that every update was accepted, every metric is defined, or paper results were reproduced. Those remain experiment results to inspect.
-
-The batch distinguishes `SUCCESS`, `CRASHED`, `INCOMPLETE`, `BOOT_TIMEOUT`, `PREPARATION_TIMEOUT`, `STALLED`, `SHUTDOWN_TIMEOUT`, `TIMEOUT`, `CANCELLED` and recovered `INTERRUPTED` attempts. Infrastructure health and unexpected container restarts are checked alongside process exit and explicit server exceptions.
-
-For Apptainer, health checks identify the live `swtpm` children carrying the current attempt marker. Every configured Edge must have exactly one such service with the expected state directory and server/control socket arguments, and both socket files must exist. The background Apptainer launcher PID recorded by the boot script is not assumed to equal the TPM child PID. Ledger completeness is checked separately during startup.
-
-| Limit | Default | Override, in seconds |
-| --- | --- | --- |
-| Network boot and complete TPM provisioning | 30 minutes | `--boot-timeout 1800` |
-| Dataset artifact preparation and dispatch | 2 hours | `--prepare-timeout 7200` |
-| No newly saved round after training dispatch | 1 hour | `--stall-timeout 3600` |
-| Total attempt, starting at network boot | 7 hours | `--run-timeout 25200` |
-| Launcher exit after server completion; graceful cleanup before forced termination | 2 minutes | `--shutdown-timeout 120` |
-| Monitoring interval | 5 seconds | `--poll-interval 5` |
-
-For example, allow longer rounds without changing the other limits:
-
-```sh
-python3 scripts/ops/batch_runs.py --runtime apptainer --stall-timeout 7200
-```
-
-`STALLED` means a progress deadline expired; it is a suspected deadlock, not proof. A long first round or large evaluation can trigger it. Repeated “waiting” messages do not reset the timer. Runtime control and diagnostic commands have bounded waits; polling and cleanup may add time beyond a deadline.
-
-`round_timeout` is a separate Flower setting in `network.yaml`, defaulting to `3600.0` seconds. A queued `network.yaml` can override it for an expensive experiment. The batch records the executed value along with other configuration, but raising it does not raise the batch limits in this table. Allow the stall deadline to cover initial model evaluation, client work, regional aggregation and saved-round evaluation; it should normally exceed the Flower client-response budget. The [preflight plan](preflight.md) includes live completion, crash and stalled-run checks.
-
-After a failed attempt, the runner captures diagnostics, stops only processes/containers identified as belonging to that attempt, archives its outputs, restores baseline configuration and proceeds to the next queued run. There are no automatic retries. A backup, configuration-restoration or cleanup failure halts the batch. If processes cannot be confirmed stopped, the active configuration remains in place for recovery instead of changing underneath them.
-
-Apptainer shutdown terminates application payloads first and leaves runtime parents and FUSE helpers alive to finish Apptainer's normal teardown. After `--shutdown-timeout`, only surviving owned payloads may be force-terminated; the runtime then gets another shutdown interval to finish. A remaining runtime/helper halts the batch rather than being killed to force the next experiment to start. Python and the Linux kernel must support pidfds; preflight checks this before launching work.
-
-Each Apptainer attempt saves `results/<attempt>/process_inventory.json`, recording PID/start-time identities and descendants, including helpers without the application environment marker. The inventory survives supervisor recovery. `shutdown_processes.json` records remaining owned processes and unexplained new FUSE helpers. New helpers outside the inventory block completion but are never signalled; helpers present before the attempt are not taken over. A concurrent unrelated container launch can therefore cause a conservative halt. Older interrupted batches without an inventory cannot be declared stopped while unexplained helpers remain. The boot launcher also checks its TPM child and applies a 60-second socket deadline per Edge (`ZTA_TPM_START_TIMEOUT`); it checks provisioning exit codes before declaring readiness.
-
-## Preserved evidence
-
-Each invocation creates a separate folder under `results/batch_archives/`:
-
-```text
-<batch-id>/
-  batch.json                       frozen plan, limits and attempt outcomes
-  baseline_config/                 original configuration, including comments
-  source/                          source/scripts, documentation, Dockerfiles and dependency manifests
-  git_state.json                   revision, dirty status and tracked diff
-  preexisting/                     logs/runtime/.flwr present before the batch
-  attempts/<attempt-id>/
-    overrides/                     supplied per-run YAML text
-    executed_config/               complete configuration actually installed
-    effective_config.json          merged requested runtime configuration
-    config_at_exit/                active config before restoration
-    status.json                    outcome, reason, elapsed time, PIDs/exit codes
-    events.jsonl                   phase/progress/outcome timestamps
-    boot.log
-    dispatch.log
-    runtime_diagnostics.json       runtime/image, disk and available GPU details
-    processes.json                 processes identified as owned by this attempt
-    docker-*.log                   Docker container stdout/stderr, where applicable
-    logs/                          all node and system logs
-    runtime/                       TPM state, ledgers, locks, Ray/Flower runtime files
-    .flwr/                         project-local Flower cache, if created
-    results/                       complete copy of this attempt's result directory
-    artifact_manifests/             manifests for the selected dataset's artifacts
-    preprocessing_report.json      full-data cleaning report, when available
-    dataset_reference.json         source location and size, when available
-    docker-compose.yml             generated Compose definition, when available
-```
-
-The canonical `results/<attempt-id>/` also remains available for existing analysis tools. When the server starts, it records `resolved_runtime.json` there with the actual merged YAML/Flower settings, package versions, platform and selected execution environment values. It also records lifecycle status/tracebacks and saved-round progress. Failures before server startup cannot produce server-side metadata; their planned configuration and launcher diagnostics are still retained.
-
-Live `logs/` and `runtime/` directories are moved into the archive only after the attempt stops. This preserves their files, including TPM material and diagnostic files owned by container users. Socket entries are historical filesystem metadata, not restorable running sockets. Docker inspection/logs are collected before container removal. Apptainer batch processes inherit a unique attempt marker, allowing Linux `/proc` ownership checks even for orphaned Ray workers. Batch launchers do not execute the standalone launchers' broad process-name cleanup or log deletion.
-
-Dataset CSVs and compiled training tensors are **not copied**. They stay in `data/`; saved artifact manifests contain provenance hashes. Output models/checkpoints are copied with results. Archives are append-only across attempts and are not automatically pruned. If archival cannot complete, the runner leaves remaining live files in place and stops before another run can overwrite them.
-
-## Interruption and recovery
-
-Ctrl+C or SIGTERM cancels the current attempt, collects evidence, shuts it down, restores the baseline after confirmed shutdown and leaves the remaining queue pending. A hard kill or host failure may bypass cleanup; the batch journal and existing files remain available.
-
-Resume the saved batch explicitly:
-
-```sh
-python3 scripts/ops/batch_runs.py --resume results/batch_archives/<batch-id>
-```
-
-Resume uses its saved backend, configuration plan and time limits. It recovers any unfinished attempt first and marks that attempt `INTERRUPTED`, then runs only `PENDING` entries by default. Recovery diagnostics are kept separately from earlier diagnostics.
-
-To restart interrupted experiments, including attempts cancelled with Ctrl+C or SIGTERM, use:
-
-```sh
-python3 scripts/ops/batch_runs.py --resume results/batch_archives/<batch-id> --retry-interrupted
-```
-
-This requeues all `INTERRUPTED` and `CANCELLED` entries in their original queue order alongside pending experiments. Each retry starts training from round 1 with a new attempt ID; it does not load the interrupted model checkpoint. Earlier attempt directories, logs and results remain intact. The queue entry's `previous_attempts` list retains earlier attempt IDs, outcomes and recorded progress, while its current status describes the latest attempt. A successful retry resolves that queue entry for the batch exit code. There is no automatic retry loop: if the new attempt fails, normal failure handling applies.
-
-To explicitly skip interrupted/cancelled experiments and continue only pending entries:
-
-```sh
-python3 scripts/ops/batch_runs.py --resume results/batch_archives/<batch-id> --skip-interrupted
-```
-
-Skipping is also the default when neither flag is supplied. The flags are mutually exclusive and require `--resume`. Add `--dry-run` to preview which entries would be requeued without recovering processes or modifying saved files; a preview does not establish that recovery or source validation will succeed. Successful experiments and other failures such as `CRASHED`, `STALLED` or `TIMEOUT` are never requeued by this option; repeat those using a new batch. Retrying runs only after unfinished-attempt recovery, source validation and runtime preflight succeed.
-
-Source changes prevent continuing pending entries with a different implementation; recovery of the old active attempt is still performed before stopping. This check also applies to `--retry-interrupted`, including batches created before this option was added. Start a new batch for the new source revision. A new invocation will refuse to ignore an unfinished attempt identified by the workspace journal. The old script's name-only `batch_status.log` is not used to skip runs.
-
-Exit codes: `0` means every queued attempt succeeded; `1` means at least one attempt failed/interrupted; `2` means validation or safe continuation failed; `130` means cancellation. Consult `batch.json` and per-attempt `status.json` for details.
-
-## Verification
-
-Host-only supervision and shell-dispatch tests:
-
-```sh
-python3 -B -m unittest scripts.tests.test_batch_runs -v
-```
-
-With the project's ML dependencies installed, include the simulation entry-point and checkpoint integration checks:
-
-```sh
-python3 -B scripts/tests/run_tests.py --pattern 'test_batch*.py' --report scripts/tests/reports/batch_runs_tests.json
-```
-
-Tests cover independent config overlays, exact completion requirements, crashes, deadlines, log noise, cancellation, archival failure, exclusive locking and interrupted-run recovery. Actual launcher scripts execute against recording Docker/Apptainer CLI stubs to check foreground exit propagation and preservation of diagnostics. Integration tests exercise the real server-call boundary and checkpoint saver with controlled training results. These tests do not launch live containers or constitute an overnight hardware/runtime validation.

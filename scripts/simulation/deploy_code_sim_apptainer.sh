@@ -41,6 +41,7 @@ export TZ="$HOST_TZ"
 # =========================================================
 # PRE-FLIGHT DEPENDENCY & HEALTH CHECK
 # =========================================================
+if [ "${ZTA_BATCH_MANAGED:-0}" != "1" ]; then
 if [ ! -f "$PROJECT_ROOT/runtime/infra/.network_ready" ]; then
     echo "  FATAL: The simulation network is not running or failed to boot."
     echo "   Please run 'boot_network_sim_apptainer.sh' first and wait for the success message."
@@ -53,6 +54,7 @@ if ! pgrep -f "swtpm" > /dev/null; then
     rm -f "$PROJECT_ROOT/runtime/infra/.network_ready"
     echo "   Please run 'boot_network_sim_apptainer.sh' to boot the network."
     exit 1
+fi
 fi
 
 # =========================================================
@@ -150,6 +152,7 @@ echo "================================================="
 echo "   COMPILING DATASET ARTIFACTS (IF MISSING)      "
 echo "================================================="
 
+if [ -z "${ZTA_BATCH_SESSION:-}" ]; then
 if ! apptainer exec --pwd /app \
     --env N_SIM="${TOTAL_EDGES}" \
     --bind "$PROJECT_ROOT/data:/app/data" \
@@ -163,6 +166,7 @@ if ! apptainer exec --pwd /app \
     exit 1
 fi
 echo "  Dataset Artifacts Verified!"
+fi
 
 # =========================================================
 # 3. SIMULATION DEPLOYMENT DISPATCH
@@ -221,6 +225,7 @@ apptainer exec --writable-tmpfs $GPU_ARGS ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} --
     --env ZTA_GPU_AVAILABLE="${ZTA_GPU_AVAILABLE}" \
     --env NUM_FOGS="${NUM_FOGS}" \
     --env N_SIM="${TOTAL_EDGES}" \
+    --env ZTA_BATCH_SESSION="${ZTA_BATCH_SESSION:-}" \
     --env FLWR_HOME="$FLWR_TMP_HOME" \
     --env PYTHONPATH="/tmp:/app" \
     --env OMP_NUM_THREADS=1 \
@@ -246,6 +251,9 @@ apptainer exec --writable-tmpfs $GPU_ARGS ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} --
         sed -i "s/dashboard_process\.children()/()/g" /python/venv/lib/python3.13/site-packages/ray/_private/node.py
         sed -i "s/raise AccessDenied(pid) from err/pass/g" /python/venv/lib/python3.13/site-packages/ray/thirdparty_files/psutil/_pslinux.py
 
+        if [ -n "${ZTA_BATCH_SESSION:-}" ]; then
+            exec /python/venv/bin/python3 /app/scripts/ops/batch_worker.py "$ZTA_BATCH_SESSION"
+        fi
         FED_CFG=$(/python/venv/bin/python3 -c "
 import os, tomllib, pathlib
 data = tomllib.loads(pathlib.Path(\"/app/pyproject.toml\").read_text())
@@ -269,7 +277,11 @@ print(\" \".join(cfg))
 }
 if [ "${ZTA_BATCH_MANAGED:-0}" = "1" ]; then
     printf 'training\n' > "$ZTA_BATCH_PHASE_FILE"
-    launch_simulation > "$LOG_DIR/system/run_cloud.log" 2>&1
+    if [ -n "${ZTA_BATCH_SESSION:-}" ]; then
+        launch_simulation
+    else
+        launch_simulation > "$LOG_DIR/system/run_cloud.log" 2>&1
+    fi
 else
     launch_simulation > "$LOG_DIR/system/run_cloud.log" 2>&1 &
 fi

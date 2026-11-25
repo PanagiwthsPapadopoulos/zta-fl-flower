@@ -172,7 +172,7 @@ chmod +x scripts/simulation/deploy_code_sim_apptainer.sh
 
 ## 4. Monitoring, results and overnight runs
 
-Use the [monitoring and results guide](monitoring-and-results.md) for the live pipeline display, logs, saved models and post-run analysis. For sequential unattended simulations with per-run configuration, time limits and diagnostic archives, follow the [overnight batch guide](batch-runs.md). The batch runner handles network boot and teardown itself. Use the [preflight run plan](preflight.md) for exact configurations and acceptance criteria before long experiments.
+Use the [monitoring and results guide](monitoring-and-results.md) for the live pipeline display, logs, saved models and post-run analysis. For sequential unattended simulations with per-run configuration, time limits and diagnostic archives, follow the [overnight batch guide](batch-runs.md). The batch runner boots once, reuses the TPM services and one Flower coordinator across separate training runs, and tears down once after the queue. Use the [preflight run plan](preflight.md) for exact configurations and acceptance criteria before long experiments.
 
 ### Flower timeout
 

@@ -55,15 +55,11 @@ cleanup() {
     local status=$?
     trap - EXIT
     trap '' SIGINT SIGTERM SIGTSTP
-    # The batch supervisor stops payloads and waits for Apptainer's own cleanup.
-    # Killing the launcher here can orphan the FUSE driver before it is unmounted.
-    if [ "${ZTA_BATCH_MANAGED:-0}" != "1" ]; then
-        # Use the live job table, not historical PIDs of reaped provisioning jobs.
-        local live_pids
-        live_pids=$(jobs -pr)
-        for pid in $live_pids; do kill -TERM "$pid" 2>/dev/null || true; done
-        for pid in $live_pids; do wait "$pid" 2>/dev/null || true; done
-    fi
+    # Stop this shell's live jobs on exit, including managed batches.
+    local live_pids
+    live_pids=$(jobs -pr)
+    for pid in $live_pids; do kill -TERM "$pid" 2>/dev/null || true; done
+    for pid in $live_pids; do wait "$pid" 2>/dev/null || true; done
     rm -f "$PROJECT_ROOT/runtime/infra/.network_ready"
     exit "$status"
 }

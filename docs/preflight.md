@@ -210,56 +210,25 @@ options.backend.client-resources.num-gpus = 0.5
 
 The Apptainer launcher reads these resource values and overrides the node count from topology. The fractional GPU request lets Ray schedule two client workers per visible GPU; the existing lock policy remains separate. Confirm CUDA is actually visible inside the runtime and used in the node logs. Do not interpret a CPU fallback as a GPU qualification. CPU tests can explicitly set `num-gpus = 0.0`. Do not change the manifest or hardware policy while a batch runs.
 
-The Docker simulation launcher forwards the topology's node count and requests one GPU per Ray client worker when the Edge tier is GPU-enabled and CUDA is visible inside `sim-cloud`; otherwise it requests zero GPUs. This lets Ray expose CUDA to scheduled Edge workers. It does **not** forward the Apptainer manifest resource settings above. Cloud and Edge selection each follow their own tier policy. Confirm the actual device in the node logs before treating a run as GPU qualification; the source tests use mocked GPU probes, not live NVIDIA hardware.
+Both batch backends now read the local federation resource settings from `pyproject.toml`. The standalone Docker launcher still derives its GPU request from the Edge tier's device policy. Confirm the actual device in node logs. GPU lock settings are deployment-only and do not limit simulation actors.
 
 Run this queue with the stage-3 batch command, replacing its path with `experiments_queue/preflight-scale`. The launchers automatically build/reuse artifacts; they must not silently use snippet artifacts for a full-data path. Before accepting each dataset, inspect its archived artifact manifest: source provenance must match the full CSV, validation/test remain unresampled, all 15 Edge/CIC classes or 10 UNSW classes must have observations in the base splits, and the 100 Edge partitions must exist. Each partition intentionally contains a subset of classes. The source-test suite already checks transformation and split semantics on fixtures; these live runs qualify the actual artifacts and model interface.
 
-Additional pass criteria: all 100 Edges are accounted for in round 1; no region errors, resource exhaustion or legitimate quote expiry; clean training updates the global model; expensive paths actually execute. Measure the longest interval between saved rounds, peak memory and disk growth from these runs. The one-hour Flower and IPC budgets and two-hour stall deadline are initial test limits, not predictions about the machine's speed. If healthy work exceeds them, record the measured duration, change the relevant budget explicitly and repeat that test. Do not widen TPM freshness merely to conceal scheduling delays.
+Additional pass criteria: all 100 Edges are accounted for in round 1; no region errors, resource exhaustion or legitimate quote expiry; clean training updates the global model; expensive paths actually execute. Measure the longest interval between saved rounds, peak memory and disk growth from these runs. The one-hour Flower and IPC budgets and two-hour stall deadline are initial test limits, not predictions about the machine's speed. If healthy work exceeds them, record the measured duration, change the relevant budget explicitly and repeat that test. Record the selected TPM freshness window with the results; the paper queue now uses an explicit 180-second HPC latency allowance.
 
-The smoke configuration deliberately preserves the current 120-second freshness allowance. The paper reports 60 seconds. If the campaign will claim that setting, repeat the scale cases with `tpm_freshness_window: 60` and require no legitimate quote-expiry failures. A passing test at 120 seconds does not establish readiness at 60 seconds.
+This optional smoke protocol uses 120 seconds; the paper queue uses the separately requested 180-second HPC allowance. The paper reports 60 seconds. If the campaign will claim that setting, repeat the scale cases with `tpm_freshness_window: 60` and require no legitimate quote-expiry failures. A passing test at 120 seconds does not establish readiness at 60 seconds.
 
 ## 5. Live batch recovery drills
 
-Use a separate 2×3 smoke baseline and queue, CPU only, with `num_rounds: 2`, `round_timeout: 3600.0` and all attack ratios zero. Each drill is a fresh two-entry queue: `01_interrupt` followed by `02_clean`. Both entries contain the same complete smoke configuration. Use a new queue path for each drill, so old experiments cannot run accidentally.
+These are optional destructive tests for a disposable smoke queue, not commands for an active paper campaign. Use two small entries and retain all security checks.
 
-**Crash drill:** start the batch with stage-3 deadlines. Once the first attempt reaches training, deliberately stop only its execution process:
+First verify that two successful experiments have different Flower run IDs and fresh model/trust state, while the coordinator PID and TPM identities remain unchanged. Confirm that the first run's training workers have exited before the second configuration is installed.
 
-- Docker: `docker kill sim-cloud`.
-- Apptainer: obtain the first attempt ID from the active `batch.json`, then run the following on the execution host. It targets only processes carrying that attempt marker:
+For a failure drill, stop only the first Flower run using its recorded `flower_run_id` and the private connection recorded in `infra_<id>/flower_runtime.json`. Do not kill the cloud container or signal the batch infrastructure marker: that now identifies the shared environment for the whole queue. The failed run should retain its actual Flower failure reason; after its workers exit, the second run should start on the same coordinator.
 
-  ```sh
-  python3 - '<attempt-id>' <<'PY'
-  import os, signal, sys
-  from scripts.ops.batch_runs import owned_processes
-  records = owned_processes(sys.argv[1])
-  assert records, 'No processes belong to that attempt; nothing was stopped'
-  for record in records:
-      try:
-          os.kill(record['pid'], signal.SIGKILL)
-      except ProcessLookupError:
-          pass
-  PY
-  ```
+For cancellation/recovery, interrupt the host batch command with Ctrl+C. Expect the active run to become `CANCELLED`, the second to remain `PENDING`, and one final infrastructure shutdown. Resume with `--retry-interrupted`; expect a new environment and new attempt ID, with earlier evidence preserved. See [batch recovery](batch-runs.md#interruption-and-resume).
 
-Pass: the first attempt is `CRASHED`, its logs/runtime/config/results are archived, the second starts automatically with a fresh network and finishes `SUCCESS`, and baseline configs are restored. The batch exits 1 because a deliberate failure occurred. Failure to clean up safely must halt the batch, rather than continue with live processes from the old run.
-
-**Stall drill:** repeat with a fresh two-entry queue and the same deadlines. During the first attempt's training, suspend computation while keeping infrastructure alive:
-
-- Docker: `docker exec sim-cloud pkill -STOP -f 'flwr-simulation'`. Flower 1.30 runs the ServerApp in a thread inside this simulation process. Confirm that process stopped; do not suspend the host supervisor or pause the entire container, which may trigger an infrastructure-health failure instead.
-- Apptainer: run the following with the current first-attempt ID. Keep the batch supervisor and TPM processes running:
-
-  ```sh
-  python3 - '<attempt-id>' <<'PY'
-  import os, signal, sys
-  from scripts.ops.batch_runs import owned_processes
-  records = [r for r in owned_processes(sys.argv[1]) if 'flwr-simulation' in r['command']]
-  assert records, 'No simulation process found for this attempt; nothing was suspended'
-  for record in records:
-      os.kill(record['pid'], signal.SIGSTOP)
-  PY
-  ```
-
-Do not resume the stopped process manually. With `--stall-timeout 7200`, expect `STALLED` after roughly two hours without a newly saved round, followed by cleanup and `02_clean` succeeding. For a faster drill, first measure the clean smoke run and select a smaller deadline that still exceeds its longest saved-round interval; a too-small limit can also fail the second run. Keep the total deadline larger than the stall deadline. Logs alone must not reset progress. This test verifies the watchdog and forced cleanup, not a proof that every real deadlock is detectable.
+An unconfirmed process exit or failed archive must block the next configuration. Killing the entire cloud environment tests infrastructure failure and is expected to halt the queue, rather than automatically rebuild it between experiments.
 
 ## 6. Long-run qualification and campaign start
 
