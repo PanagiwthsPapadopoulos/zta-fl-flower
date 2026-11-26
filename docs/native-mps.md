@@ -1,6 +1,18 @@
 # Native Flower training on Apple Silicon
 
-Run from the repository with its native ARM64 Python environment:
+Install all dependencies from the repository root in a native ARM64 Python 3.11 environment:
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+`requirements.txt` installs the project dependencies from `pyproject.toml` and the
+host tools; no separate Captum, TorchMetrics or Flower install is needed. These
+are dependency ranges, not a full version lock. Preserve resolved versions when
+matching another machine's experiment environment.
+
+Run from the repository with that environment:
 
 ```bash
 .venv/bin/python scripts/simulation/run_native_mps.py --smoke-test

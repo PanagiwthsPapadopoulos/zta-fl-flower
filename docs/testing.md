@@ -11,11 +11,11 @@ Run from the repository root with Python 3.11 and the project dependencies. A CP
 ```sh
 python3.11 -m venv .venv-test
 . .venv-test/bin/activate
-python -m pip install -e .
+python -m pip install -r requirements.txt
 python -B scripts/tests/run_tests.py --report scripts/tests/reports/node_source_tests.json
 ```
 
-The installer resolves the dependencies in `pyproject.toml`; they are not all pinned, so preserve the report's actual versions when citing a run. `requirements.txt` alone does not list all test dependencies (notably Captum and TorchMetrics). On hardware without a supported PyTorch dynamic INT8 CPU backend, quantization tests must fail visibly: do not silently skip them and claim quantization was verified.
+The installer resolves the dependencies in `pyproject.toml`; they are not all pinned, so preserve the report's actual versions when citing a run. `requirements.txt` installs the project and all dependencies declared in `pyproject.toml` (including Captum and TorchMetrics), plus host monitoring and dataset-download tools. On hardware without a supported PyTorch dynamic INT8 CPU backend, quantization tests must fail visibly: do not silently skip them and claim quantization was verified.
 
 `run_tests.py` uses standard `unittest` discovery, anchors paths to the repository root, selects the CPU test tier and repository YAML configuration, and disables the insecure TPM bypass. It does **not** start services or modify production configuration. Tests that require security results use explicit local mocks instead of the bypass. It exits nonzero for failures, import errors, unexpected successes, source changes during the run, or an empty test selection.
 

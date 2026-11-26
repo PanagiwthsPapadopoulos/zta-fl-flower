@@ -1,8 +1,7 @@
-torch
-scikit-learn
-imbalanced-learn
-PyYAML
-matplotlib
-rich
-flwr[simulation]==1.30.0
+# Run from the repository root. Runtime/training dependencies come from pyproject.toml.
+-e .
+
+# Host monitoring and dataset-download tools.
+rich>=13.9.4,<16
 kagglehub
+requests

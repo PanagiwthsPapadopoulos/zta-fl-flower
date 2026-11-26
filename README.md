@@ -4,6 +4,16 @@ A Flower implementation of the [ZTA-FL framework](https://arxiv.org/abs/2512.238
 
 Read the [architecture parity report](docs/architecture-parity.md) for the relationship to the paper and authors' implementation, disclosed deviations and implementation limits.
 
+Install the project, training dependencies and host tools from the repository root:
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Runtime dependencies are declared in `pyproject.toml`; `requirements.txt` installs
+that project plus monitoring and dataset-download tools.
+
 ## Guides
 
 | Guide | Purpose |
