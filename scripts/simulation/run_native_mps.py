@@ -150,6 +150,8 @@ def main():
     parser.add_argument("--workers", type=int, default=1, help="Concurrent Ray client workers (default: 1)")
     parser.add_argument("--tpm-image", default="panagiotispapadopoulos/zta-edge-node:latest")
     args = parser.parse_args()
+    if not args.tpm_image.strip():
+        parser.error("--tpm-image must not be empty; supply an image name directly or omit the option")
     def interrupted(signum, frame):
         raise KeyboardInterrupt("Native run interrupted")
     signal.signal(signal.SIGTERM, interrupted)

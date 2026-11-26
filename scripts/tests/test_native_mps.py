@@ -1,5 +1,7 @@
 """Native runtime regression checks; live Docker testing is separate."""
 import copy
+import io
+from contextlib import redirect_stderr
 import importlib.util
 import json
 import logging
@@ -125,6 +127,15 @@ class TPMTransportTests(unittest.TestCase):
 
 
 class NativeLauncherTests(unittest.TestCase):
+    def test_empty_image_fails_before_docker_or_run_setup(self):
+        for value in ("", "   "):
+            with patch.object(launcher.sys,"argv",["run_native_mps.py","--tpm-image",value]), patch.object(launcher.subprocess,"run") as run, redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as caught:
+                    launcher.main()
+            self.assertEqual(caught.exception.code,2)
+            self.assertIn("--tpm-image must not be empty",errors.getvalue())
+            run.assert_not_called()
+
     def test_cleanup_attempts_down_and_writes_status_after_prior_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             run = Path(directory)

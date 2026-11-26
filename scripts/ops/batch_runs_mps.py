@@ -72,8 +72,12 @@ def run_one(root, folder, entry, settings, cancelled, update):
         finally:
             stop_launcher(child, settings["shutdown_timeout"])
     status = read_json(run_dir / "native_status.json")
-    if not status or "cleanup_errors" not in status or status["cleanup_errors"]:
-        raise BatchError("Cleanup not confirmed; inspect launcher.log and native_status.json before starting another experiment")
+    if not status:
+        raise BatchError(f"Native launcher exited {child.returncode} without native_status.json; "
+                         f"startup may have failed. Inspect {folder / 'launcher.log'}. Cleanup is unverified.")
+    if "cleanup_errors" not in status or status["cleanup_errors"]:
+        raise BatchError(f"Cleanup not confirmed: {status.get('cleanup_errors', 'missing cleanup evidence')}; "
+                         f"inspect {run_dir / 'native_status.json'}")
     if interrupted:
         return interrupted, "Native launcher stopped and cleanup completed"
     if child.returncode != 0 or status.get("status") != "COMPLETED":
@@ -168,6 +172,8 @@ def main(argv=None):
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--retry-failed", action="store_true", help="On resume, restart unsuccessful entries from round one")
     args = parser.parse_args(argv)
+    if not args.tpm_image.strip():
+        parser.error("--tpm-image must not be empty; supply an image name directly or omit the option")
     if not 1 <= args.workers <= (os.cpu_count() or 1) or not 0 < args.run_timeout < float("inf") or not 0 < args.shutdown_timeout < float("inf"):
         parser.error("workers must fit this host; timeouts must be finite and positive")
     if args.retry_failed and not args.resume:

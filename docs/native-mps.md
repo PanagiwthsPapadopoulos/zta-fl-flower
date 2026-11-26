@@ -150,3 +150,17 @@ For an explicit integration smoke test, select a small queue and add
 profile; the archive records this setting. Do not use smoke results as full
 experiment results. `--run-dir` on the single-run launcher is used internally to
 assign unique output paths and refuses an existing directory.
+
+## Empty TPM image / early startup failure
+
+Use an image name directly with `--tpm-image`, or omit the option to use the
+default image. Passing `--tpm-image "$TPM_IMAGE"` from a new shell where that
+variable is unset passes an empty string. Both native launchers reject empty
+image arguments before creating a run.
+
+Older batches may report unconfirmed cleanup when `docker image inspect ''`
+failed before the run directory was created. Inspect `launcher.log` to establish
+the cause; missing status alone does not establish that resources were never
+started. If the first experiment failed at that image check, no TPMs or training
+were started: retain the failed archive and start a new batch with the correct
+image. Resuming uses the frozen image setting, so it would reuse the empty value.

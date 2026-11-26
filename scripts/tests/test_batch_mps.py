@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from unittest.mock import patch, Mock
 
 import yaml
@@ -34,6 +34,27 @@ class NativeBatchTests(unittest.TestCase):
         _, runs = plan_queue(self.root,self.queue,fixed_topology=False)
         self.state={'version':1,'runtime':'native-mps','runs':runs,'settings':{
             'workers':1,'tpm_image':'test','run_timeout':10,'shutdown_timeout':3,'smoke_test':False}}
+
+    def test_empty_image_is_rejected_before_creating_batch(self):
+        before=set(self.root.rglob("*"))
+        for image in ("", "   "):
+            with patch.object(batch,"ROOT",self.root), patch.object(batch,"execute") as execute, redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as caught:
+                    batch.main(["--queue",str(self.queue),"--tpm-image",image])
+            self.assertEqual(caught.exception.code,2)
+            self.assertIn("--tpm-image must not be empty",errors.getvalue())
+            execute.assert_not_called()
+        self.assertEqual(before,set(self.root.rglob("*")))
+
+    def test_early_launcher_failure_reports_exit_code_and_log_path(self):
+        folder=self.root/"attempt"
+        entry=dict(self.state["runs"][0],run_dir=str(self.root/"never_created"))
+        child=Mock(returncode=2);child.poll.return_value=2
+        with patch.object(batch.subprocess,"Popen",return_value=child), patch.object(batch,"stop_launcher"):
+            with self.assertRaises(BatchError) as caught:
+                batch.run_one(self.root,folder,entry,self.state["settings"],lambda:False,Mock())
+        self.assertIn("exited 2 without native_status.json",str(caught.exception))
+        self.assertIn(str(folder/"launcher.log"),str(caught.exception))
 
     def test_dry_run_is_read_only_and_needs_no_mps(self):
         before={str(p):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
